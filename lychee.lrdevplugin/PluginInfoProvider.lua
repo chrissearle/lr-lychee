@@ -1,9 +1,12 @@
-local LrHttp = import "LrHttp"
+local LrView = import 'LrView'
+local bind = LrView.bind
+local prefs = import 'LrPrefs'.prefsForPlugin()
 
 local function sectionsForTopOfDialog( f, _ )
 	return {
 			{
 				title = "Lychee Server and Login",
+				bind_to_object = prefs,
 				f:row {
 					spacing = f:control_spacing(),
 
@@ -12,6 +15,7 @@ local function sectionsForTopOfDialog( f, _ )
 						width_in_chars = 20,
 					},
 					f:edit_field {
+						value = bind 'lychee_site_url',
 						fill_horizonal = 1,
 						width_in_chars = 35,
 					}
@@ -24,6 +28,7 @@ local function sectionsForTopOfDialog( f, _ )
 						width_in_chars = 20,
 					},
 					f:edit_field {
+						value = bind 'lychee_api_key',
 						fill_horizonal = 1,
 						width_in_chars = 35,
 					}
@@ -44,6 +49,7 @@ local function sectionsForTopOfDialog( f, _ )
 						width_in_chars = 20,
 					},
 					f:edit_field {
+						value = bind 'lychee_username',
 						fill_horizonal = 1,
 						width_in_chars = 35,
 					}
@@ -56,6 +62,7 @@ local function sectionsForTopOfDialog( f, _ )
 						width_in_chars = 20,
 					},
 					f:password_field {
+						value = bind 'lychee_password',
 						fill_horizonal = 1,
 						width_in_chars = 35,
 					}
