@@ -1,11 +1,15 @@
 local LrErrors = import "LrErrors"
 local LrDialogs = import "LrDialogs"
 local LrHttp = import "LrHttp"
+local LrPathUtils = import "LrPathUtils"
+
 local logger = import "LrLogger"("Lychee")
 
 logger:enable("logfile")
 
 local prefs = import "LrPrefs".prefsForPlugin()
+
+JSON = (loadfile(LrPathUtils.child(_PLUGIN.path, "json.lua")))()
 
 LycheeAPI = {}
 
@@ -100,4 +104,26 @@ function LycheeAPI.login()
 	else
 		LrErrors.throwUserError("Login failed - please check the configuration via Plugin Manager")
 	end
+end
+
+function LycheeAPI.getAlbums()
+	local url, api_key, username, password = LycheeAPI.getConfig()
+
+	local albums_url = url .. "/api/Albums::get"
+
+	logger:info("Calling albums on " .. albums_url)
+
+	local headers =
+		initHeaders(
+		{
+			{field = "Authorization", value = api_key},
+			{field = "Content-Type", value = "application/x-www-form-urlencoded"}
+		}
+	)
+
+	local albumsResponse, data = LrHttp.post(albums_url, "", headers, "POST")
+
+	local albums = JSON:decode(albumsResponse)
+
+	logger:info(JSON:encode_pretty(albums))
 end

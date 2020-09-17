@@ -79,6 +79,23 @@ local function sectionsForTopOfDialog(f, _)
 					end
 				}
 			}
+		},
+		{
+			title = "Albums",
+			f:row {
+				spacing = f:control_spacing(),
+				f:push_button {
+					enabled = true,
+					title = "Fetch Albums",
+					action = function(button)
+						import "LrTasks".startAsyncTask(
+							function()
+								LycheeAPI.getAlbums()
+							end
+						)
+					end
+				}
+			}
 		}
 	}
 end
