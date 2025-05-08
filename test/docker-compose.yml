@@ -1,0 +1,39 @@
+services:
+  lychee_db:
+    container_name: lychee_db
+    image: postgres:17.4
+    environment:
+      - POSTGRES_USER=lychee
+      - POSTGRES_PASSWORD=lychee
+      - POSTGRES_DB=lychee
+    networks:
+      - lychee
+    restart: unless-stopped
+
+  lychee:
+    image: lycheeorg/lychee
+    container_name: lychee
+    ports:
+      - 9999:80
+    networks:
+      - lychee
+    environment:
+      - PUID=501
+      - PGID=20
+      - PHP_TZ=Europe/Oslo
+      - APP_URL=http://localhost
+      - DB_CONNECTION=pgsql
+      - DB_HOST=lychee_db
+      - DB_PORT=5432
+      - DB_DATABASE=lychee
+      - DB_USERNAME=lychee
+      - DB_PASSWORD=lychee
+      - STARTUP_DELAY=30
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=password
+    restart: unless-stopped
+    depends_on:
+      - lychee_db
+
+networks:
+  lychee:
