@@ -1,7 +1,10 @@
 local LrView = import 'LrView'
 local LrPrefs = import 'LrPrefs'
+local LrDialogs = import 'LrDialogs'
+local LrTasks = import 'LrTasks'
 
 local prefs = LrPrefs.prefsForPlugin()
+local logger = require 'Logger'
 
 return {
     sectionsForTopOfDialog = function(f)
@@ -51,6 +54,22 @@ return {
                             bind_to_object = prefs,
                         },
                         width_in_chars = 40,
+                    },
+                },
+            },
+            {
+                title = "Test",
+                f:row {
+                    spacing = f:control_spacing(),
+                    f:push_button {
+                        title = "Test Login",
+                        action = function()
+                            LrTasks.startAsyncTask(function()
+                                local LycheeAPI = require 'LycheeAPI'
+                                local response, headers = LycheeAPI.login()
+                                logger:info("Test Login Response: " .. response)
+                            end)
+                        end,
                     },
                 },
             },
