@@ -702,6 +702,23 @@ end
 -- Album Settings (shown in Edit Published Collection / Collection Set dialog)
 --------------------------------------------------------------------------------
 
+-- Build header popup items from a photo list
+local function buildHeaderItems(photos)
+    local items = {
+        { title = '— Default', value = '' },
+        { title = 'Use compact header', value = 'compact' },
+    }
+    if photos then
+        for _, photo in ipairs(photos) do
+            if photo.id then
+                local label = photo.title or photo.id
+                items[#items + 1] = { title = label, value = photo.id }
+            end
+        end
+    end
+    return items
+end
+
 -- Popup items for album settings dropdowns
 local LICENSE_ITEMS = {
     { title = 'None', value = 'none' },
@@ -804,6 +821,8 @@ local function initCollectionSettingsDefaults(collectionSettings)
     if collectionSettings.grants_download == nil then collectionSettings.grants_download = false end
     if collectionSettings.is_password_required == nil then collectionSettings.is_password_required = false end
     if collectionSettings.password == nil then collectionSettings.password = '' end
+    if collectionSettings.header_id == nil then collectionSettings.header_id = '' end
+    if collectionSettings.header_items == nil then collectionSettings.header_items = buildHeaderItems(nil) end
     if collectionSettings.lychee_loaded == nil then collectionSettings.lychee_loaded = false end
 end
 
@@ -958,6 +977,21 @@ local function buildAlbumSettingsView(f, collectionSettings)
                         width = 120,
                     },
                 },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Header',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'header_id',
+                        items = bind 'header_items',
+                        width = 250,
+                    },
+                },
             },
         },
 
@@ -1051,13 +1085,18 @@ local function saveAlbumSettingsToLychee(publishSettings, remoteId, collectionNa
         return
     end
 
-    -- Fetch current album state to preserve fields we don't expose in UI
+    -- Fetch current album state to preserve is_pinned (not exposed in our UI)
     local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
     local editable = {}
     if albumData then
         local resource = albumData.resource or albumData
         editable = resource.editable or {}
     end
+
+    -- Derive header fields from collectionSettings.header_id
+    local headerVal = collectionSettings.header_id or ''
+    local isCompact = headerVal == 'compact'
+    local headerPhotoId = (headerVal ~= '' and headerVal ~= 'compact') and headerVal or nil
 
     -- Save album properties
     local settingsData = {
@@ -1073,10 +1112,9 @@ local function saveAlbumSettingsToLychee(publishSettings, remoteId, collectionNa
         photo_layout = collectionSettings.photo_layout ~= '' and collectionSettings.photo_layout or nil,
         album_timeline = collectionSettings.album_timeline ~= '' and collectionSettings.album_timeline or nil,
         photo_timeline = collectionSettings.photo_timeline ~= '' and collectionSettings.photo_timeline or nil,
-        -- Preserve existing values for fields not in our UI
-        is_compact = editable.header_id == 'compact' or false,
+        is_compact = isCompact,
         is_pinned = editable.is_pinned or false,
-        header_id = (editable.header_id ~= 'compact') and editable.header_id or nil,
+        header_id = headerPhotoId,
     }
 
     local ok, err = LycheeAPI.updateAlbumSettings(publishSettings, remoteId, settingsData)
@@ -1166,7 +1204,6 @@ function publishServiceProvider.viewForCollectionSettings(f, publishSettings, in
         LrTasks.startAsyncTask(function()
             local remoteId = resolveRemoteId(publishedCollection, publishSettings, collectionName)
             if remoteId then
-                -- Call fetch directly (we're already in an async context)
                 logger:info('Fetching album settings for ' .. remoteId)
                 local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
                 if not albumData then
@@ -1180,28 +1217,37 @@ function publishServiceProvider.viewForCollectionSettings(f, publishSettings, in
                 local photoSorting = editable.photo_sorting or {}
                 local albumSorting = editable.album_sorting or {}
 
+                -- Update header popup items with album photos (bound via observable)
+                local photos = resource.photos or {}
+                collectionSettings.header_items = buildHeaderItems(photos)
+                logger:info('Loaded ' .. #photos .. ' photos for header selection')
+
                 collectionSettings.description = resource.description or ''
                 collectionSettings.copyright = resource.copyright or ''
 
-                -- License: editable has the raw enum value (e.g. 'reserved'),
-                -- resource.license is the localized display string
                 local rawLicense = toVal(editable.license)
                 collectionSettings.license = rawLicense ~= '' and rawLicense or 'none'
 
-                -- Sorting: editable.photo_sorting / album_sorting are objects
-                -- with .column and .order sub-fields
                 collectionSettings.photo_sorting_column = toVal(photoSorting.column)
                 collectionSettings.photo_sorting_order = toVal(photoSorting.order)
                 collectionSettings.album_sorting_column = toVal(albumSorting.column)
                 collectionSettings.album_sorting_order = toVal(albumSorting.order)
 
-                -- Layout / aspect / timeline come from editable
                 collectionSettings.album_aspect_ratio = toVal(editable.aspect_ratio)
                 collectionSettings.photo_layout = toVal(editable.photo_layout)
                 collectionSettings.album_timeline = toVal(editable.album_timeline)
                 collectionSettings.photo_timeline = toVal(editable.photo_timeline)
 
-                -- Visibility flags from policy
+                -- Header: editable.header_id is 'compact', a photo ID, or nil
+                local hid = editable.header_id
+                if hid == 'compact' then
+                    collectionSettings.header_id = 'compact'
+                elseif hid and hid ~= '' then
+                    collectionSettings.header_id = hid
+                else
+                    collectionSettings.header_id = ''
+                end
+
                 collectionSettings.is_public = policy.is_public == true
                 collectionSettings.is_link_required = policy.is_link_required == true
                 collectionSettings.is_nsfw = policy.is_nsfw == true
@@ -1258,6 +1304,10 @@ function publishServiceProvider.viewForCollectionSetSettings(f, publishSettings,
                 local photoSorting = editable.photo_sorting or {}
                 local albumSorting = editable.album_sorting or {}
 
+                -- Update header popup items with album photos (bound via observable)
+                local photos = resource.photos or {}
+                collectionSettings.header_items = buildHeaderItems(photos)
+
                 collectionSettings.description = resource.description or ''
                 collectionSettings.copyright = resource.copyright or ''
 
@@ -1273,6 +1323,15 @@ function publishServiceProvider.viewForCollectionSetSettings(f, publishSettings,
                 collectionSettings.photo_layout = toVal(editable.photo_layout)
                 collectionSettings.album_timeline = toVal(editable.album_timeline)
                 collectionSettings.photo_timeline = toVal(editable.photo_timeline)
+
+                local hid = editable.header_id
+                if hid == 'compact' then
+                    collectionSettings.header_id = 'compact'
+                elseif hid and hid ~= '' then
+                    collectionSettings.header_id = hid
+                else
+                    collectionSettings.header_id = ''
+                end
 
                 collectionSettings.is_public = policy.is_public == true
                 collectionSettings.is_link_required = policy.is_link_required == true
