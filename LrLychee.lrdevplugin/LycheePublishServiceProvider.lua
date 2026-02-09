@@ -695,7 +695,8 @@ function publishServiceProvider.getCollectionUrl(publishSettings, publishedColle
         return publishSettings.gallery_url .. '/gallery/' .. remoteId
     end
 
-    return nil
+    -- No remoteId yet — return gallery root rather than nil (avoids error dialog)
+    return publishSettings.gallery_url
 end
 
 --------------------------------------------------------------------------------
