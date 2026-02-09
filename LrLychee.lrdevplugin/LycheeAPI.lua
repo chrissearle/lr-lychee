@@ -903,6 +903,98 @@ function LycheeAPI.updatePhoto(settings, photoId, albumId, metadata)
     return response or {}, nil
 end
 
+-- Update album settings (everything except title, which is handled by renameAlbum)
+-- Uses PATCH /Album with all editable properties
+function LycheeAPI.updateAlbumSettings(settings, albumId, albumData)
+    local url = getBaseUrl(settings) .. '/Album'
+    local headers = buildHeaders(settings)
+
+    local body = jsonEncode({
+        album_id = albumId,
+        title = albumData.title or '',
+        description = albumData.description or JSON_NULL,
+        license = albumData.license or 'none',
+        copyright = albumData.copyright or JSON_NULL,
+        photo_sorting_column = albumData.photo_sorting_column or JSON_NULL,
+        photo_sorting_order = albumData.photo_sorting_order or JSON_NULL,
+        album_sorting_column = albumData.album_sorting_column or JSON_NULL,
+        album_sorting_order = albumData.album_sorting_order or JSON_NULL,
+        album_aspect_ratio = albumData.album_aspect_ratio or JSON_NULL,
+        photo_layout = albumData.photo_layout or JSON_NULL,
+        album_timeline = albumData.album_timeline or JSON_NULL,
+        photo_timeline = albumData.photo_timeline or JSON_NULL,
+        -- Required by Lychee even if not changed
+        is_compact = albumData.is_compact or false,
+        is_pinned = albumData.is_pinned or false,
+        header_id = albumData.header_id or JSON_NULL,
+    })
+
+    logger:info('Updating album settings: ' .. body)
+
+    local result, respHeaders = LrHttp.post(url, body, headers, 'PATCH', 30)
+
+    if not result then
+        return false, 'Failed to update album settings (no response)'
+    end
+
+    local response = jsonDecode(result)
+    if type(response) == 'table' and (response.error or response.exception or response.errors) then
+        return false, 'Update failed: ' .. (response.message or response.exception or 'Unknown error')
+    end
+
+    return true, nil
+end
+
+-- Update album protection / visibility policy
+-- Uses POST /Album::updateProtectionPolicy
+function LycheeAPI.updateProtectionPolicy(settings, albumId, policyData)
+    local url = getBaseUrl(settings) .. '/Album::updateProtectionPolicy'
+    local headers = buildHeaders(settings)
+
+    local body = {
+        album_id = albumId,
+        is_public = policyData.is_public or false,
+        is_link_required = policyData.is_link_required or false,
+        is_nsfw = policyData.is_nsfw or false,
+        grants_full_photo_access = policyData.grants_full_photo_access or false,
+        grants_download = policyData.grants_download or false,
+        grants_upload = policyData.grants_upload or false,
+    }
+
+    -- Only include password field if explicitly provided
+    if policyData.password and policyData.password ~= '' then
+        body.password = policyData.password
+    end
+
+    local jsonBody = jsonEncode(body)
+    logger:info('Updating protection policy: ' .. jsonBody)
+
+    local result, respHeaders = LrHttp.post(url, jsonBody, headers, 30)
+
+    -- Lychee may return 204 No Content on success
+    if result == nil and respHeaders then
+        for _, h in ipairs(respHeaders) do
+            local field = h.field or h[1]
+            local value = h.value or h[2]
+            if field and field:lower() == 'status' then
+                local status = tonumber(tostring(value):match('%d+'))
+                if status and status >= 200 and status < 300 then
+                    return true, nil
+                end
+            end
+        end
+    end
+
+    if result and result ~= '' then
+        local response = jsonDecode(result)
+        if type(response) == 'table' and (response.error or response.exception or response.errors) then
+            return false, 'Update failed: ' .. (response.message or response.exception or 'Unknown error')
+        end
+    end
+
+    return true, nil
+end
+
 -- Expose findPhotoByFilename for use by the publish service provider
 LycheeAPI.findPhotoByFilename = findPhotoByFilename
 

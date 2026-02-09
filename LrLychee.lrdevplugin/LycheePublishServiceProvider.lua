@@ -13,6 +13,8 @@ local LrPathUtils = import 'LrPathUtils'
 local LrBinding = import 'LrBinding'
 local LrLogger = import 'LrLogger'
 local LrErrors = import 'LrErrors'
+local LrColor = import 'LrColor'
+local LrApplication = import 'LrApplication'
 
 local logger = LrLogger('LycheePlugin')
 logger:enable('logfile')
@@ -694,6 +696,613 @@ function publishServiceProvider.getCollectionUrl(publishSettings, publishedColle
     end
 
     return nil
+end
+
+--------------------------------------------------------------------------------
+-- Album Settings (shown in Edit Published Collection / Collection Set dialog)
+--------------------------------------------------------------------------------
+
+-- Popup items for album settings dropdowns
+local LICENSE_ITEMS = {
+    { title = 'None', value = 'none' },
+    { title = 'All Rights Reserved', value = 'reserved' },
+    { title = 'CC0 - Public Domain', value = 'CC0' },
+    { title = 'CC Attribution 4.0', value = 'CC-BY-4.0' },
+    { title = 'CC Attribution-ShareAlike 4.0', value = 'CC-BY-SA-4.0' },
+    { title = 'CC Attribution-NoDerivs 4.0', value = 'CC-BY-ND-4.0' },
+    { title = 'CC Attribution-NonCommercial 4.0', value = 'CC-BY-NC-4.0' },
+    { title = 'CC Attribution-NonCommercial-ShareAlike 4.0', value = 'CC-BY-NC-SA-4.0' },
+    { title = 'CC Attribution-NonCommercial-NoDerivs 4.0', value = 'CC-BY-NC-ND-4.0' },
+}
+
+local PHOTO_SORT_COLUMN_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Created at', value = 'created_at' },
+    { title = 'Taken at', value = 'taken_at' },
+    { title = 'Title', value = 'title' },
+    { title = 'Description', value = 'description' },
+    { title = 'Starred', value = 'is_starred' },
+    { title = 'Type', value = 'type' },
+}
+
+local ALBUM_SORT_COLUMN_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Created at', value = 'created_at' },
+    { title = 'Title', value = 'title' },
+    { title = 'Description', value = 'description' },
+    { title = 'Min taken at', value = 'min_taken_at' },
+    { title = 'Max taken at', value = 'max_taken_at' },
+}
+
+local SORT_ORDER_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Ascending', value = 'ASC' },
+    { title = 'Descending', value = 'DESC' },
+}
+
+local ASPECT_RATIO_ITEMS = {
+    { title = '—', value = '' },
+    { title = '1:1', value = '1/1' },
+    { title = '5:4', value = '5/4' },
+    { title = '3:2', value = '3/2' },
+    { title = '2:3', value = '2/3' },
+    { title = '4:5', value = '4/5' },
+    { title = '16:9', value = '16/9' },
+}
+
+local PHOTO_LAYOUT_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Square', value = 'square' },
+    { title = 'Justified', value = 'justified' },
+    { title = 'Masonry', value = 'masonry' },
+    { title = 'Grid', value = 'grid' },
+}
+
+local TIMELINE_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Default', value = 'default' },
+    { title = 'Disabled', value = 'disabled' },
+    { title = 'Year', value = 'year' },
+    { title = 'Month', value = 'month' },
+    { title = 'Day', value = 'day' },
+}
+
+local PHOTO_TIMELINE_ITEMS = {
+    { title = '—', value = '' },
+    { title = 'Default', value = 'default' },
+    { title = 'Disabled', value = 'disabled' },
+    { title = 'Year', value = 'year' },
+    { title = 'Month', value = 'month' },
+    { title = 'Day', value = 'day' },
+    { title = 'Hour', value = 'hour' },
+}
+
+-- Helper: convert nil / JSON null to empty string for popup bindings
+local function toVal(v)
+    if v == nil or v == '' then return '' end
+    return tostring(v)
+end
+
+-- Helper: set default values on collectionSettings for all album properties.
+-- These are the values used when creating a new collection (no remote album yet).
+local function initCollectionSettingsDefaults(collectionSettings)
+    if collectionSettings.description == nil then collectionSettings.description = '' end
+    if collectionSettings.license == nil then collectionSettings.license = 'none' end
+    if collectionSettings.copyright == nil then collectionSettings.copyright = '' end
+    if collectionSettings.photo_sorting_column == nil then collectionSettings.photo_sorting_column = '' end
+    if collectionSettings.photo_sorting_order == nil then collectionSettings.photo_sorting_order = '' end
+    if collectionSettings.album_sorting_column == nil then collectionSettings.album_sorting_column = '' end
+    if collectionSettings.album_sorting_order == nil then collectionSettings.album_sorting_order = '' end
+    if collectionSettings.album_aspect_ratio == nil then collectionSettings.album_aspect_ratio = '' end
+    if collectionSettings.photo_layout == nil then collectionSettings.photo_layout = '' end
+    if collectionSettings.album_timeline == nil then collectionSettings.album_timeline = '' end
+    if collectionSettings.photo_timeline == nil then collectionSettings.photo_timeline = '' end
+    if collectionSettings.is_public == nil then collectionSettings.is_public = false end
+    if collectionSettings.is_link_required == nil then collectionSettings.is_link_required = false end
+    if collectionSettings.is_nsfw == nil then collectionSettings.is_nsfw = false end
+    if collectionSettings.grants_full_photo_access == nil then collectionSettings.grants_full_photo_access = false end
+    if collectionSettings.grants_download == nil then collectionSettings.grants_download = false end
+    if collectionSettings.is_password_required == nil then collectionSettings.is_password_required = false end
+    if collectionSettings.password == nil then collectionSettings.password = '' end
+    if collectionSettings.lychee_loaded == nil then collectionSettings.lychee_loaded = false end
+end
+
+-- Build the album settings view (shared between collections and collection sets)
+local function buildAlbumSettingsView(f, collectionSettings)
+    local bind = LrView.bind
+
+    return f:column {
+        spacing = f:control_spacing(),
+        fill_horizontal = 1,
+        bind_to_object = collectionSettings,
+
+        -- Album Properties
+        f:group_box {
+            title = 'Lychee Album Settings',
+            fill_horizontal = 1,
+
+            f:column {
+                spacing = f:control_spacing(),
+                fill_horizontal = 1,
+
+                f:static_text {
+                    title = 'Description',
+                },
+                f:edit_field {
+                    value = bind 'description',
+                    fill_horizontal = 1,
+                    height_in_lines = 3,
+                    immediate = true,
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Order photos by',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'photo_sorting_column',
+                        items = PHOTO_SORT_COLUMN_ITEMS,
+                        width = 140,
+                    },
+                    f:popup_menu {
+                        value = bind 'photo_sorting_order',
+                        items = SORT_ORDER_ITEMS,
+                        width = 100,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Order albums by',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'album_sorting_column',
+                        items = ALBUM_SORT_COLUMN_ITEMS,
+                        width = 140,
+                    },
+                    f:popup_menu {
+                        value = bind 'album_sorting_order',
+                        items = SORT_ORDER_ITEMS,
+                        width = 100,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'License',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'license',
+                        items = LICENSE_ITEMS,
+                        width = 250,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Copyright',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:edit_field {
+                        value = bind 'copyright',
+                        fill_horizontal = 1,
+                        immediate = true,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Thumbs aspect ratio',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'album_aspect_ratio',
+                        items = ASPECT_RATIO_ITEMS,
+                        width = 100,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Photo layout',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'photo_layout',
+                        items = PHOTO_LAYOUT_ITEMS,
+                        width = 120,
+                    },
+                },
+
+                f:row {
+                    spacing = f:label_spacing(),
+
+                    f:static_text {
+                        title = 'Album timeline',
+                        alignment = 'right',
+                        width = LrView.share 'lychee_label_width',
+                    },
+                    f:popup_menu {
+                        value = bind 'album_timeline',
+                        items = TIMELINE_ITEMS,
+                        width = 120,
+                    },
+
+                    f:static_text {
+                        title = 'Photo timeline',
+                    },
+                    f:popup_menu {
+                        value = bind 'photo_timeline',
+                        items = PHOTO_TIMELINE_ITEMS,
+                        width = 120,
+                    },
+                },
+            },
+        },
+
+        -- Visibility & Access
+        f:group_box {
+            title = 'Visibility & Access',
+            fill_horizontal = 1,
+
+            f:column {
+                spacing = f:control_spacing(),
+                fill_horizontal = 1,
+
+                f:row {
+                    f:checkbox {
+                        title = 'Public',
+                        value = bind 'is_public',
+                    },
+                    f:static_text {
+                        title = '— Anonymous users can access this album',
+                        text_color = LrColor(0.6, 0.6, 0.6),
+                    },
+                },
+
+                -- Sub-options disabled when Public is off
+                f:column {
+                    margin_left = 20,
+                    spacing = f:control_spacing(),
+                    fill_horizontal = 1,
+
+                    f:checkbox {
+                        title = 'Original — View full-resolution photos',
+                        value = bind 'grants_full_photo_access',
+                        enabled = bind 'is_public',
+                    },
+                    f:checkbox {
+                        title = 'Hidden — Requires a direct link to access',
+                        value = bind 'is_link_required',
+                        enabled = bind 'is_public',
+                    },
+                    f:checkbox {
+                        title = 'Downloadable — Allow anonymous downloads',
+                        value = bind 'grants_download',
+                        enabled = bind 'is_public',
+                    },
+                    f:checkbox {
+                        title = 'Password protected',
+                        value = bind 'is_password_required',
+                        enabled = bind 'is_public',
+                    },
+
+                    f:row {
+                        margin_left = 20,
+                        spacing = f:label_spacing(),
+
+                        f:static_text {
+                            title = 'Password',
+                            enabled = bind 'is_password_required',
+                        },
+                        f:edit_field {
+                            value = bind 'password',
+                            width = 200,
+                            immediate = true,
+                            enabled = bind 'is_password_required',
+                        },
+                    },
+                },
+
+                f:separator { fill_horizontal = 1 },
+
+                f:row {
+                    f:checkbox {
+                        title = 'Sensitive',
+                        value = bind 'is_nsfw',
+                    },
+                    f:static_text {
+                        title = '— Album contains sensitive content',
+                        text_color = LrColor(0.6, 0.6, 0.6),
+                    },
+                },
+            },
+        },
+    }
+end
+
+-- Helper: push album settings and protection policy to Lychee.
+-- Called from updateCollectionSettings / updateCollectionSetSettings.
+local function saveAlbumSettingsToLychee(publishSettings, remoteId, collectionName, collectionSettings)
+    logger:info('saveAlbumSettingsToLychee called, remoteId=' .. tostring(remoteId) .. ', name=' .. tostring(collectionName))
+    if not remoteId or remoteId == '' then
+        logger:info('No remote album ID — skipping settings push (will apply on first publish)')
+        return
+    end
+
+    -- Fetch current album state to preserve fields we don't expose in UI
+    local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
+    local editable = {}
+    if albumData then
+        local resource = albumData.resource or albumData
+        editable = resource.editable or {}
+    end
+
+    -- Save album properties
+    local settingsData = {
+        title = collectionName or '',
+        description = collectionSettings.description ~= '' and collectionSettings.description or nil,
+        license = collectionSettings.license or 'none',
+        copyright = collectionSettings.copyright ~= '' and collectionSettings.copyright or nil,
+        photo_sorting_column = collectionSettings.photo_sorting_column ~= '' and collectionSettings.photo_sorting_column or nil,
+        photo_sorting_order = collectionSettings.photo_sorting_order ~= '' and collectionSettings.photo_sorting_order or nil,
+        album_sorting_column = collectionSettings.album_sorting_column ~= '' and collectionSettings.album_sorting_column or nil,
+        album_sorting_order = collectionSettings.album_sorting_order ~= '' and collectionSettings.album_sorting_order or nil,
+        album_aspect_ratio = collectionSettings.album_aspect_ratio ~= '' and collectionSettings.album_aspect_ratio or nil,
+        photo_layout = collectionSettings.photo_layout ~= '' and collectionSettings.photo_layout or nil,
+        album_timeline = collectionSettings.album_timeline ~= '' and collectionSettings.album_timeline or nil,
+        photo_timeline = collectionSettings.photo_timeline ~= '' and collectionSettings.photo_timeline or nil,
+        -- Preserve existing values for fields not in our UI
+        is_compact = editable.header_id == 'compact' or false,
+        is_pinned = editable.is_pinned or false,
+        header_id = (editable.header_id ~= 'compact') and editable.header_id or nil,
+    }
+
+    local ok, err = LycheeAPI.updateAlbumSettings(publishSettings, remoteId, settingsData)
+    if not ok then
+        LrDialogs.message('Error', 'Failed to save album settings: ' .. (err or 'Unknown error'), 'critical')
+        return
+    end
+
+    -- Save protection policy
+    local policyUpdate = {
+        is_public = collectionSettings.is_public == true,
+        is_link_required = collectionSettings.is_link_required == true,
+        is_nsfw = collectionSettings.is_nsfw == true,
+        grants_full_photo_access = collectionSettings.grants_full_photo_access == true,
+        grants_download = collectionSettings.grants_download == true,
+        grants_upload = false, -- not exposed in UI, default to false
+    }
+
+    -- Only send password if user typed one
+    if collectionSettings.is_password_required and collectionSettings.password ~= '' then
+        policyUpdate.password = collectionSettings.password
+    end
+
+    local pOk, pErr = LycheeAPI.updateProtectionPolicy(publishSettings, remoteId, policyUpdate)
+    if not pOk then
+        LrDialogs.message('Error',
+            'Album properties saved, but failed to update visibility settings: '
+            .. (pErr or 'Unknown error'), 'critical')
+    end
+end
+
+-- Helper: get the remote album ID for a published collection/set.
+-- Tries getRemoteId() first, falls back to searching Lychee by name.
+-- Must be called from within an async task context.
+local function resolveRemoteId(publishedCollection, publishSettings, collectionName)
+    -- Try getRemoteId() from catalog
+    if publishedCollection then
+        local remoteId = nil
+        local catalog = LrApplication.activeCatalog()
+        catalog:withReadAccessDo(function()
+            remoteId = publishedCollection:getRemoteId()
+        end)
+
+        if remoteId and remoteId ~= '' then
+            logger:info('Got remoteId from catalog: ' .. tostring(remoteId))
+            return remoteId
+        end
+    end
+
+    -- Fallback: search Lychee by album name
+    if collectionName and collectionName ~= '' then
+        logger:info('remoteId not in catalog, searching Lychee for album "' .. collectionName .. '"')
+        local album, findErr = LycheeAPI.findAlbumByTitle(publishSettings, collectionName)
+        if album and album.id then
+            local albumId = album.id
+            logger:info('Found album by title: ' .. albumId)
+            -- Also fix the catalog so future lookups work
+            if publishedCollection then
+                local catalog = LrApplication.activeCatalog()
+                catalog:withWriteAccessDo('Set remote ID', function()
+                    publishedCollection:setRemoteId(albumId)
+                    publishedCollection:setRemoteUrl(
+                        publishSettings.gallery_url .. '/gallery/' .. albumId
+                    )
+                end)
+                logger:info('Stored remoteId in catalog for future use')
+            end
+            return albumId
+        else
+            logger:info('Could not find album by title: ' .. (findErr or 'not found'))
+        end
+    end
+
+    logger:info('No remote album ID found for collection')
+    return nil
+end
+
+-- SDK callback: build custom UI for the Create/Edit Published Collection dialog
+function publishServiceProvider.viewForCollectionSettings(f, publishSettings, info)
+    local collectionSettings = assert(info.collectionSettings)
+    initCollectionSettingsDefaults(collectionSettings)
+
+    -- Fetch from server inside an async task (where yielding is allowed)
+    local publishedCollection = info.publishedCollection
+    local collectionName = info.name
+    if publishedCollection then
+        LrTasks.startAsyncTask(function()
+            local remoteId = resolveRemoteId(publishedCollection, publishSettings, collectionName)
+            if remoteId then
+                -- Call fetch directly (we're already in an async context)
+                logger:info('Fetching album settings for ' .. remoteId)
+                local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
+                if not albumData then
+                    logger:warn('Could not load album settings: ' .. (fetchErr or 'Unknown error'))
+                    return
+                end
+
+                local resource = albumData.resource or albumData
+                local policy = resource.policy or {}
+                local editable = resource.editable or {}
+                local photoSorting = editable.photo_sorting or {}
+                local albumSorting = editable.album_sorting or {}
+
+                collectionSettings.description = resource.description or ''
+                collectionSettings.copyright = resource.copyright or ''
+
+                -- License: editable has the raw enum value (e.g. 'reserved'),
+                -- resource.license is the localized display string
+                local rawLicense = toVal(editable.license)
+                collectionSettings.license = rawLicense ~= '' and rawLicense or 'none'
+
+                -- Sorting: editable.photo_sorting / album_sorting are objects
+                -- with .column and .order sub-fields
+                collectionSettings.photo_sorting_column = toVal(photoSorting.column)
+                collectionSettings.photo_sorting_order = toVal(photoSorting.order)
+                collectionSettings.album_sorting_column = toVal(albumSorting.column)
+                collectionSettings.album_sorting_order = toVal(albumSorting.order)
+
+                -- Layout / aspect / timeline come from editable
+                collectionSettings.album_aspect_ratio = toVal(editable.aspect_ratio)
+                collectionSettings.photo_layout = toVal(editable.photo_layout)
+                collectionSettings.album_timeline = toVal(editable.album_timeline)
+                collectionSettings.photo_timeline = toVal(editable.photo_timeline)
+
+                -- Visibility flags from policy
+                collectionSettings.is_public = policy.is_public == true
+                collectionSettings.is_link_required = policy.is_link_required == true
+                collectionSettings.is_nsfw = policy.is_nsfw == true
+                collectionSettings.grants_full_photo_access = policy.grants_full_photo_access == true
+                collectionSettings.grants_download = policy.grants_download == true
+                collectionSettings.is_password_required = policy.is_password_required == true
+                collectionSettings.password = ''
+
+                logger:info('Album settings loaded for ' .. remoteId)
+            end
+        end)
+    end
+
+    return buildAlbumSettingsView(f, collectionSettings)
+end
+
+-- SDK callback: save collection settings to Lychee when user clicks OK
+function publishServiceProvider.updateCollectionSettings(publishSettings, info)
+    local collectionSettings = assert(info.collectionSettings)
+    local name = info.name
+    local publishedCollection = info.publishedCollection
+
+    LrTasks.startAsyncTask(function()
+        local remoteId = info.remoteId
+        if (not remoteId or remoteId == '') and publishedCollection then
+            remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
+        end
+        saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+    end)
+end
+
+-- SDK callback: build custom UI for the Create/Edit Published Collection Set dialog
+function publishServiceProvider.viewForCollectionSetSettings(f, publishSettings, info)
+    local collectionSettings = assert(info.collectionSettings)
+    initCollectionSettingsDefaults(collectionSettings)
+
+    -- Fetch from server inside an async task (where yielding is allowed)
+    local publishedCollection = info.publishedCollection
+    local collectionName = info.name
+    if publishedCollection then
+        LrTasks.startAsyncTask(function()
+            local remoteId = resolveRemoteId(publishedCollection, publishSettings, collectionName)
+            if remoteId then
+                logger:info('Fetching album settings for set ' .. remoteId)
+                local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
+                if not albumData then
+                    logger:warn('Could not load album settings: ' .. (fetchErr or 'Unknown error'))
+                    return
+                end
+
+                local resource = albumData.resource or albumData
+                local policy = resource.policy or {}
+                local editable = resource.editable or {}
+                local photoSorting = editable.photo_sorting or {}
+                local albumSorting = editable.album_sorting or {}
+
+                collectionSettings.description = resource.description or ''
+                collectionSettings.copyright = resource.copyright or ''
+
+                local rawLicense = toVal(editable.license)
+                collectionSettings.license = rawLicense ~= '' and rawLicense or 'none'
+
+                collectionSettings.photo_sorting_column = toVal(photoSorting.column)
+                collectionSettings.photo_sorting_order = toVal(photoSorting.order)
+                collectionSettings.album_sorting_column = toVal(albumSorting.column)
+                collectionSettings.album_sorting_order = toVal(albumSorting.order)
+
+                collectionSettings.album_aspect_ratio = toVal(editable.aspect_ratio)
+                collectionSettings.photo_layout = toVal(editable.photo_layout)
+                collectionSettings.album_timeline = toVal(editable.album_timeline)
+                collectionSettings.photo_timeline = toVal(editable.photo_timeline)
+
+                collectionSettings.is_public = policy.is_public == true
+                collectionSettings.is_link_required = policy.is_link_required == true
+                collectionSettings.is_nsfw = policy.is_nsfw == true
+                collectionSettings.grants_full_photo_access = policy.grants_full_photo_access == true
+                collectionSettings.grants_download = policy.grants_download == true
+                collectionSettings.is_password_required = policy.is_password_required == true
+                collectionSettings.password = ''
+
+                logger:info('Album settings loaded for set ' .. remoteId)
+            end
+        end)
+    end
+
+    return buildAlbumSettingsView(f, collectionSettings)
+end
+
+-- SDK callback: save collection set settings to Lychee when user clicks OK
+function publishServiceProvider.updateCollectionSetSettings(publishSettings, info)
+    local collectionSettings = assert(info.collectionSettings)
+    local name = info.name
+    local publishedCollection = info.publishedCollection
+
+    LrTasks.startAsyncTask(function()
+        local remoteId = info.remoteId
+        if (not remoteId or remoteId == '') and publishedCollection then
+            remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
+        end
+        saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+    end)
 end
 
 -- Export file format settings
