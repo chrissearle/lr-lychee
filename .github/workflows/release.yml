@@ -1,0 +1,31 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package plugin
+        run: |
+          # Copy .lrdevplugin to .lrplugin (distribution format)
+          cp -r LrLychee.lrdevplugin LrLychee.lrplugin
+
+          # Create zip archive
+          zip -r LrLychee.lrplugin.zip LrLychee.lrplugin/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: LrLychee.lrplugin.zip
+          generate_release_notes: true
