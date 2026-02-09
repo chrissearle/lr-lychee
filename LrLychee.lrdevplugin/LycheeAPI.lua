@@ -301,16 +301,66 @@ function LycheeAPI.findAlbumByTitle(settings, title)
     return nil, nil -- Not found, but no error
 end
 
+-- Find album by title scoped to a specific parent album
+-- If parentId is nil, searches top-level albums only
+-- Returns album table or nil
+function LycheeAPI.findAlbumByTitleUnderParent(settings, title, parentId)
+    if parentId then
+        -- Fetch the parent album and search its children
+        local albumDetails, err = LycheeAPI.getAlbumDetails(settings, parentId)
+        if not albumDetails then
+            return nil, err
+        end
+
+        -- Album details response has: resource.albums (child albums)
+        local resource = albumDetails.resource
+        if resource and resource.albums then
+            for _, album in ipairs(resource.albums) do
+                if album.title == title then
+                    return album, nil
+                end
+            end
+        end
+
+        -- Also check top-level albums field (response structure varies)
+        if albumDetails.albums then
+            for _, album in ipairs(albumDetails.albums) do
+                if album.title == title then
+                    return album, nil
+                end
+            end
+        end
+
+        return nil, nil -- Not found under this parent
+    else
+        -- No parent - search top-level albums only (not recursively)
+        local albums, err = LycheeAPI.getAlbums(settings)
+        if not albums then
+            return nil, err
+        end
+
+        if albums.albums then
+            for _, album in ipairs(albums.albums) do
+                if album.title == title then
+                    return album, nil
+                end
+            end
+        end
+
+        return nil, nil
+    end
+end
+
 -- Create a new album
 -- Returns the album ID as a string on success
 function LycheeAPI.createAlbum(settings, title, parentId)
     local url = getBaseUrl(settings) .. '/Album'
     local headers = buildHeaders(settings)
 
-    -- parent_id must be present - use empty string for root-level albums
+    -- parent_id must be present - use JSON null for root-level albums
     local bodyTable = {
         title = title,
-        parent_id = parentId or '',
+        parent_id = parentId or JSON_NULL,
     }
     local body = jsonEncode(bodyTable)
 
@@ -348,11 +398,11 @@ function LycheeAPI.createAlbum(settings, title, parentId)
     return nil, 'Invalid response from server: ' .. tostring(result)
 end
 
--- Find or create album by title
+-- Find or create album by title, optionally scoped to a parent album
 -- Returns album table with id and title fields
-function LycheeAPI.findOrCreateAlbum(settings, title)
-    -- First try to find existing album
-    local album, err = LycheeAPI.findAlbumByTitle(settings, title)
+function LycheeAPI.findOrCreateAlbum(settings, title, parentId)
+    -- First try to find existing album (scoped to parent if provided)
+    local album, err = LycheeAPI.findAlbumByTitleUnderParent(settings, title, parentId)
     if err then
         return nil, err
     end
@@ -361,8 +411,8 @@ function LycheeAPI.findOrCreateAlbum(settings, title)
         return album, nil
     end
 
-    -- Create new album - returns just the album ID
-    local albumId, createErr = LycheeAPI.createAlbum(settings, title, nil)
+    -- Create new album under the specified parent (or at root)
+    local albumId, createErr = LycheeAPI.createAlbum(settings, title, parentId)
     if createErr then
         return nil, createErr
     end
@@ -399,6 +449,104 @@ function LycheeAPI.renameAlbum(settings, albumId, newTitle)
     return true, nil
 end
 
+-- Move album(s) to a new parent album (or to root if newParentId is nil)
+-- Uses POST /Album::move with { album_id: destination, album_ids: [sources] }
+function LycheeAPI.moveAlbum(settings, albumId, newParentId)
+    local url = getBaseUrl(settings) .. '/Album::move'
+    local headers = buildHeaders(settings)
+
+    local body = jsonEncode({
+        album_id = newParentId or JSON_NULL,
+        album_ids = { albumId },
+    })
+
+    local result, respHeaders = LrHttp.post(url, body, headers, 30)
+
+    -- Lychee may return 204 No Content on success
+    if result == nil and respHeaders then
+        for _, h in ipairs(respHeaders) do
+            local field = h.field or h[1]
+            local value = h.value or h[2]
+            if field and field:lower() == 'status' then
+                local status = tonumber(tostring(value):match('%d+'))
+                if status and status >= 200 and status < 300 then
+                    return true, nil
+                end
+            end
+        end
+    end
+
+    if result and result ~= '' then
+        local response = jsonDecode(result)
+        if type(response) == 'table' and (response.error or response.exception) then
+            return false, response.message or 'Failed to move album'
+        end
+    end
+
+    return true, nil
+end
+
+-- Move photos to a different album
+-- Uses POST /Photo::move with { album_id: destination, photo_ids: [ids] }
+function LycheeAPI.movePhotos(settings, photoIds, targetAlbumId)
+    if not photoIds or #photoIds == 0 then
+        return true, nil
+    end
+
+    local url = getBaseUrl(settings) .. '/Photo::move'
+    local headers = buildHeaders(settings)
+
+    local body = jsonEncode({
+        album_id = targetAlbumId,
+        photo_ids = photoIds,
+    })
+
+    local result, respHeaders = LrHttp.post(url, body, headers, 30)
+
+    -- Lychee may return 204 No Content on success
+    if result == nil and respHeaders then
+        for _, h in ipairs(respHeaders) do
+            local field = h.field or h[1]
+            local value = h.value or h[2]
+            if field and field:lower() == 'status' then
+                local status = tonumber(tostring(value):match('%d+'))
+                if status and status >= 200 and status < 300 then
+                    return true, nil
+                end
+            end
+        end
+    end
+
+    if result and result ~= '' then
+        local response = jsonDecode(result)
+        if type(response) == 'table' and (response.error or response.exception) then
+            return false, response.message or 'Failed to move photos'
+        end
+    end
+
+    return true, nil
+end
+
+-- Get the parent album ID for a given album
+-- Returns parentId (string) or nil if album is at root
+function LycheeAPI.getAlbumParentId(settings, albumId)
+    local albumDetails, err = LycheeAPI.getAlbumDetails(settings, albumId)
+    if not albumDetails then
+        return nil, err
+    end
+
+    -- The album resource should have a parent_id field
+    local resource = albumDetails.resource or albumDetails
+    local parentId = resource.parent_id
+
+    -- parent_id may be null/nil for root-level albums
+    if parentId and parentId ~= '' then
+        return parentId, nil
+    end
+
+    return nil, nil
+end
+
 -- Get album details including photos
 function LycheeAPI.getAlbumDetails(settings, albumId)
     local url = getBaseUrl(settings) .. '/Album?album_id=' .. albumId
@@ -428,6 +576,7 @@ local function normalizeFilename(name)
 end
 
 -- Find a photo in album by original filename
+-- Also accessible as LycheeAPI.findPhotoByFilename for external use
 local function findPhotoByFilename(albumData, targetFilename)
     -- Album response has structure: { resource: { photos: [...] } }
     local resource = albumData.resource
@@ -627,6 +776,48 @@ function LycheeAPI.uploadPhoto(settings, filePath, albumId, knownPhotoIds)
     return nil, 'Upload succeeded but could not find photo ID in album for: ' .. fileName
 end
 
+-- Delete an album by ID
+-- Lychee cascades: all child albums and photos are also deleted
+function LycheeAPI.deleteAlbum(settings, albumId)
+    if not albumId or albumId == '' then
+        return true, nil
+    end
+
+    local url = getBaseUrl(settings) .. '/Album'
+    local headers = buildHeaders(settings)
+
+    local body = jsonEncode({
+        album_ids = { albumId },
+    })
+
+    -- Use LrHttp.post with DELETE method override
+    local result, respHeaders = LrHttp.post(url, body, headers, 'DELETE', 30)
+
+    -- Lychee returns 204 No Content on success (result may be empty)
+    if result == nil and respHeaders then
+        -- Check for successful status in headers
+        for _, h in ipairs(respHeaders) do
+            local field = h.field or h[1]
+            local value = h.value or h[2]
+            if field and field:lower() == 'status' then
+                local status = tonumber(tostring(value):match('%d+'))
+                if status and status >= 200 and status < 300 then
+                    return true, nil
+                end
+            end
+        end
+    end
+
+    if result and result ~= '' then
+        local response = jsonDecode(result)
+        if type(response) == 'table' and (response.error or response.exception) then
+            return false, response.message or 'Failed to delete album'
+        end
+    end
+
+    return true, nil
+end
+
 -- Delete photos by IDs
 -- API uses query parameters: photo_ids[]=id1&photo_ids[]=id2
 function LycheeAPI.deletePhotos(settings, photoIds)
@@ -711,5 +902,8 @@ function LycheeAPI.updatePhoto(settings, photoId, albumId, metadata)
 
     return response or {}, nil
 end
+
+-- Expose findPhotoByFilename for use by the publish service provider
+LycheeAPI.findPhotoByFilename = findPhotoByFilename
 
 return LycheeAPI
