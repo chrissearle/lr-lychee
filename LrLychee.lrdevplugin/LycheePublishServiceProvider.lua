@@ -1370,7 +1370,6 @@ publishServiceProvider.allowColorSpaces = { 'sRGB' }
 
 publishServiceProvider.hideSections = {
     'exportLocation',
-    'fileNaming',
     'video',
 }
 
@@ -1378,6 +1377,7 @@ publishServiceProvider.canExportVideo = false
 
 -- Hide the watermark section by default
 publishServiceProvider.showSections = {
+    'fileNaming',
     'imageSettings',
     'outputSharpening',
     'metadata',
