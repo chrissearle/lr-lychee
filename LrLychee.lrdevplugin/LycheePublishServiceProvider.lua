@@ -583,6 +583,26 @@ function publishServiceProvider.deletePhotosFromPublishedCollection(publishSetti
     end
 end
 
+-- Called when a Published Collection is being deleted
+function publishServiceProvider.deletePublishedCollection(publishSettings, info)
+    if not validateSettings(publishSettings) then
+        return
+    end
+
+    local albumId = info.remoteId
+
+    if albumId and albumId ~= '' then
+        local success, err = LycheeAPI.deleteAlbum(publishSettings, albumId)
+        if not success then
+            LrDialogs.message('Delete Failed',
+                err or 'Could not delete album from Lychee gallery.',
+                'critical')
+        else
+            logger:info('Deleted album for collection "' .. (info.name or '') .. '": ' .. albumId)
+        end
+    end
+end
+
 -- Called when a published collection is being renamed
 function publishServiceProvider.renamePublishedCollection(publishSettings, info)
     local newName = info.name
