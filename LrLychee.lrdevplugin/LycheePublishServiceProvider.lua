@@ -23,6 +23,15 @@ local LycheeAPI = require 'LycheeAPI'
 
 local publishServiceProvider = {}
 
+-- Pending collection settings for albums that don't exist on Lychee yet.
+-- When a user creates a new collection with settings (description, visibility, etc.),
+-- updateCollectionSettings fires before the album is created. We snapshot the
+-- settings here so processRenderedPhotos can apply them after album creation.
+local pendingCollectionSettings = {}
+
+-- Forward declaration (defined later, but called from processRenderedPhotos)
+local saveAlbumSettingsToLychee
+
 -- Define the fields that will be stored in export presets
 publishServiceProvider.exportPresetFields = {
     { key = 'gallery_url', default = '' },
@@ -213,6 +222,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     -- 2. Otherwise, ensure ancestor albums exist and find/create under the correct parent
     progressScope:setCaption('Finding or creating album...')
     local albumId = publishedCollectionInfo.remoteId
+    local isNewAlbum = not albumId or albumId == ''
 
     -- Determine the expected parent album from the collection set hierarchy
     local expectedParentId = ensureAncestorAlbums(publishSettings, publishedCollectionInfo.parents)
@@ -265,6 +275,16 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
         publishedCollectionInfo.publishedCollection:setRemoteUrl(
             publishSettings.gallery_url .. '/gallery/' .. albumId
         )
+    end
+
+    -- Apply pending collection settings for newly created albums.
+    -- When a user creates a new collection with settings (description, visibility, etc.),
+    -- updateCollectionSettings fires before the album exists on Lychee, so the settings
+    -- are stashed in pendingCollectionSettings. Apply them now that the album exists.
+    if isNewAlbum and pendingCollectionSettings[collectionName] then
+        logger:info('New album created — applying pending collection settings for "' .. collectionName .. '"')
+        saveAlbumSettingsToLychee(publishSettings, albumId, collectionName, pendingCollectionSettings[collectionName])
+        pendingCollectionSettings[collectionName] = nil
     end
 
     -- Get existing photo IDs and data in the album
@@ -613,6 +633,13 @@ function publishServiceProvider.didCreateNewPublishedCollectionSet(publishSettin
     info.publishedCollectionSet:setRemoteUrl(
         publishSettings.gallery_url .. '/gallery/' .. albumId
     )
+
+    -- Apply pending settings if the user configured them during creation
+    if pendingCollectionSettings[info.name] then
+        logger:info('Applying pending collection settings for set "' .. info.name .. '"')
+        saveAlbumSettingsToLychee(publishSettings, albumId, info.name, pendingCollectionSettings[info.name])
+        pendingCollectionSettings[info.name] = nil
+    end
 end
 
 -- Called when a Published Collection Set is being deleted
@@ -1078,8 +1105,8 @@ local function buildAlbumSettingsView(f, collectionSettings)
 end
 
 -- Helper: push album settings and protection policy to Lychee.
--- Called from updateCollectionSettings / updateCollectionSetSettings.
-local function saveAlbumSettingsToLychee(publishSettings, remoteId, collectionName, collectionSettings)
+-- Called from updateCollectionSettings / updateCollectionSetSettings / processRenderedPhotos.
+saveAlbumSettingsToLychee = function(publishSettings, remoteId, collectionName, collectionSettings)
     logger:info('saveAlbumSettingsToLychee called, remoteId=' .. tostring(remoteId) .. ', name=' .. tostring(collectionName))
     if not remoteId or remoteId == '' then
         logger:info('No remote album ID — skipping settings push (will apply on first publish)')
@@ -1276,7 +1303,34 @@ function publishServiceProvider.updateCollectionSettings(publishSettings, info)
         if (not remoteId or remoteId == '') and publishedCollection then
             remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
         end
-        saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+
+        if not remoteId or remoteId == '' then
+            -- Album doesn't exist yet — snapshot settings for processRenderedPhotos
+            logger:info('No remote album for "' .. name .. '" — saving settings for first publish')
+            pendingCollectionSettings[name] = {
+                description = collectionSettings.description,
+                license = collectionSettings.license,
+                copyright = collectionSettings.copyright,
+                photo_sorting_column = collectionSettings.photo_sorting_column,
+                photo_sorting_order = collectionSettings.photo_sorting_order,
+                album_sorting_column = collectionSettings.album_sorting_column,
+                album_sorting_order = collectionSettings.album_sorting_order,
+                album_aspect_ratio = collectionSettings.album_aspect_ratio,
+                photo_layout = collectionSettings.photo_layout,
+                album_timeline = collectionSettings.album_timeline,
+                photo_timeline = collectionSettings.photo_timeline,
+                header_id = collectionSettings.header_id,
+                is_public = collectionSettings.is_public,
+                is_link_required = collectionSettings.is_link_required,
+                is_nsfw = collectionSettings.is_nsfw,
+                grants_full_photo_access = collectionSettings.grants_full_photo_access,
+                grants_download = collectionSettings.grants_download,
+                is_password_required = collectionSettings.is_password_required,
+                password = collectionSettings.password,
+            }
+        else
+            saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+        end
     end)
 end
 
@@ -1361,7 +1415,34 @@ function publishServiceProvider.updateCollectionSetSettings(publishSettings, inf
         if (not remoteId or remoteId == '') and publishedCollection then
             remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
         end
-        saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+
+        if not remoteId or remoteId == '' then
+            -- Album doesn't exist yet — snapshot settings for didCreateNewPublishedCollectionSet
+            logger:info('No remote album for set "' .. name .. '" — saving settings for creation')
+            pendingCollectionSettings[name] = {
+                description = collectionSettings.description,
+                license = collectionSettings.license,
+                copyright = collectionSettings.copyright,
+                photo_sorting_column = collectionSettings.photo_sorting_column,
+                photo_sorting_order = collectionSettings.photo_sorting_order,
+                album_sorting_column = collectionSettings.album_sorting_column,
+                album_sorting_order = collectionSettings.album_sorting_order,
+                album_aspect_ratio = collectionSettings.album_aspect_ratio,
+                photo_layout = collectionSettings.photo_layout,
+                album_timeline = collectionSettings.album_timeline,
+                photo_timeline = collectionSettings.photo_timeline,
+                header_id = collectionSettings.header_id,
+                is_public = collectionSettings.is_public,
+                is_link_required = collectionSettings.is_link_required,
+                is_nsfw = collectionSettings.is_nsfw,
+                grants_full_photo_access = collectionSettings.grants_full_photo_access,
+                grants_download = collectionSettings.grants_download,
+                is_password_required = collectionSettings.is_password_required,
+                password = collectionSettings.password,
+            }
+        else
+            saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
+        end
     end)
 end
 
