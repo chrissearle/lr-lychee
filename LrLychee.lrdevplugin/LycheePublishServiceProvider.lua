@@ -277,13 +277,34 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
         )
     end
 
-    -- Apply pending collection settings for newly created albums.
+    -- Apply collection settings for newly created albums.
     -- When a user creates a new collection with settings (description, visibility, etc.),
-    -- updateCollectionSettings fires before the album exists on Lychee, so the settings
-    -- are stashed in pendingCollectionSettings. Apply them now that the album exists.
-    if isNewAlbum and pendingCollectionSettings[collectionName] then
-        logger:info('New album created — applying pending collection settings for "' .. collectionName .. '"')
-        saveAlbumSettingsToLychee(publishSettings, albumId, collectionName, pendingCollectionSettings[collectionName])
+    -- updateCollectionSettings may fire before the album exists on Lychee, stashing the
+    -- settings in pendingCollectionSettings. However, the async task in updateCollectionSettings
+    -- may not have completed yet (or may not fire at all during creation), so we also
+    -- read settings directly from the Lightroom catalog as a fallback.
+    if isNewAlbum then
+        local settingsToApply = pendingCollectionSettings[collectionName]
+
+        if not settingsToApply and publishedCollectionInfo.publishedCollection then
+            -- Fallback: read settings directly from the collection in the catalog.
+            -- This handles the race condition where updateCollectionSettings' async task
+            -- hasn't populated pendingCollectionSettings yet, or wasn't called at all.
+            logger:info('No pending settings found for "' .. collectionName .. '", reading from catalog...')
+            local catalog = LrApplication.activeCatalog()
+            catalog:withReadAccessDo(function()
+                local info = publishedCollectionInfo.publishedCollection:getCollectionInfoSummary()
+                if info and info.collectionSettings then
+                    settingsToApply = info.collectionSettings
+                    logger:info('Loaded collection settings from catalog for "' .. collectionName .. '"')
+                end
+            end)
+        end
+
+        if settingsToApply then
+            logger:info('New album created — applying collection settings for "' .. collectionName .. '"')
+            saveAlbumSettingsToLychee(publishSettings, albumId, collectionName, settingsToApply)
+        end
         pendingCollectionSettings[collectionName] = nil
     end
 
