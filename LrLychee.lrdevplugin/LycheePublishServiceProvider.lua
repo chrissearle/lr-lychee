@@ -21,6 +21,8 @@ logger:enable('logfile')
 
 local LycheeAPI = require 'LycheeAPI'
 
+local pluginVersion = '1.2.0'
+
 local publishServiceProvider = {}
 
 -- Pending collection settings for albums that don't exist on Lychee yet.
@@ -191,6 +193,7 @@ end
 
 -- Main function to process and upload rendered photos
 function publishServiceProvider.processRenderedPhotos(functionContext, exportContext)
+    logger:info('LrLychee v' .. pluginVersion .. ' — processRenderedPhotos started')
     local exportSession = exportContext.exportSession
     local publishSettings = exportContext.propertyTable
     local nPhotos = exportSession:countRenditions()
@@ -285,6 +288,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     -- read settings directly from the Lightroom catalog as a fallback.
     if isNewAlbum then
         local settingsToApply = pendingCollectionSettings[collectionName]
+        logger:info('New album "' .. collectionName .. '": pendingCollectionSettings ' ..
+            (settingsToApply and 'found' or 'NOT found'))
 
         if not settingsToApply and publishedCollectionInfo.publishedCollection then
             -- Fallback: read settings directly from the collection in the catalog.
@@ -297,13 +302,21 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                 if info and info.collectionSettings then
                     settingsToApply = info.collectionSettings
                     logger:info('Loaded collection settings from catalog for "' .. collectionName .. '"')
+                else
+                    logger:info('Catalog returned no collectionSettings for "' .. collectionName ..
+                        '" (info=' .. tostring(info ~= nil) .. ')')
                 end
             end)
+        elseif not settingsToApply then
+            logger:info('Cannot fall back to catalog: publishedCollection is nil for "' .. collectionName .. '"')
         end
 
         if settingsToApply then
             logger:info('New album created — applying collection settings for "' .. collectionName .. '"')
             saveAlbumSettingsToLychee(publishSettings, albumId, collectionName, settingsToApply)
+        else
+            logger:info('WARNING: No settings to apply for new album "' .. collectionName ..
+                '" — settings will need to be re-entered and published again')
         end
         pendingCollectionSettings[collectionName] = nil
     end
