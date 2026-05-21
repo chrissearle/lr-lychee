@@ -15,6 +15,7 @@ local LrLogger = import 'LrLogger'
 local LrErrors = import 'LrErrors'
 local LrColor = import 'LrColor'
 local LrApplication = import 'LrApplication'
+local LrPrefs = import 'LrPrefs'
 
 local logger = LrLogger('LycheePlugin')
 logger:enable('logfile')
@@ -25,11 +26,21 @@ local pluginVersion = '1.2.0'
 
 local publishServiceProvider = {}
 
--- Pending collection settings for albums that don't exist on Lychee yet.
--- When a user creates a new collection with settings (description, visibility, etc.),
--- updateCollectionSettings fires before the album is created. We snapshot the
--- settings here so processRenderedPhotos can apply them after album creation.
-local pendingCollectionSettings = {}
+-- Helpers for persisting pending collection settings across Lightroom callback invocations.
+-- Lightroom re-executes this module file for each callback (fresh Lua state), so module-level
+-- tables reset between calls. LrPrefs is catalog-backed and survives across contexts.
+-- Keys are "pending_<name>"; entries are cleared after the first successful publish.
+local function storePendingSettings(name, settings)
+    LrPrefs.prefsForPlugin()['pending_' .. name] = settings
+end
+
+local function getPendingSettings(name)
+    return LrPrefs.prefsForPlugin()['pending_' .. name]
+end
+
+local function clearPendingSettings(name)
+    LrPrefs.prefsForPlugin()['pending_' .. name] = nil
+end
 
 -- Forward declaration (defined later, but called from processRenderedPhotos)
 local saveAlbumSettingsToLychee
@@ -281,20 +292,15 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     end
 
     -- Apply collection settings for newly created albums.
-    -- When a user creates a new collection with settings (description, visibility, etc.),
-    -- updateCollectionSettings may fire before the album exists on Lychee, stashing the
-    -- settings in pendingCollectionSettings. However, the async task in updateCollectionSettings
-    -- may not have completed yet (or may not fire at all during creation), so we also
-    -- read settings directly from the Lightroom catalog as a fallback.
+    -- Settings are stored in LrPrefs by updateCollectionSettings (which runs in a separate
+    -- Lua state), retrieved here, applied to the newly created Lychee album, then cleared.
     if isNewAlbum then
-        local settingsToApply = pendingCollectionSettings[collectionName]
-        logger:info('New album "' .. collectionName .. '": pendingCollectionSettings ' ..
+        local settingsToApply = getPendingSettings(collectionName)
+        logger:info('New album "' .. collectionName .. '": prefs pending settings ' ..
             (settingsToApply and 'found' or 'NOT found'))
 
         if not settingsToApply and publishedCollectionInfo.publishedCollection then
-            -- Fallback: read settings directly from the collection in the catalog.
-            -- This handles the race condition where updateCollectionSettings' async task
-            -- hasn't populated pendingCollectionSettings yet, or wasn't called at all.
+            -- Fallback: read settings from the catalog if prefs entry is missing.
             logger:info('No pending settings found for "' .. collectionName .. '", reading from catalog...')
             local catalog = LrApplication.activeCatalog()
             catalog:withReadAccessDo(function()
@@ -318,7 +324,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
             logger:info('WARNING: No settings to apply for new album "' .. collectionName ..
                 '" — settings will need to be re-entered and published again')
         end
-        pendingCollectionSettings[collectionName] = nil
+        clearPendingSettings(collectionName)
     end
 
     -- Get existing photo IDs and data in the album
@@ -689,10 +695,11 @@ function publishServiceProvider.didCreateNewPublishedCollectionSet(publishSettin
     )
 
     -- Apply pending settings if the user configured them during creation
-    if pendingCollectionSettings[info.name] then
+    local pendingSet = getPendingSettings(info.name)
+    if pendingSet then
         logger:info('Applying pending collection settings for set "' .. info.name .. '"')
-        saveAlbumSettingsToLychee(publishSettings, albumId, info.name, pendingCollectionSettings[info.name])
-        pendingCollectionSettings[info.name] = nil
+        saveAlbumSettingsToLychee(publishSettings, albumId, info.name, pendingSet)
+        clearPendingSettings(info.name)
     end
 end
 
@@ -1352,39 +1359,45 @@ function publishServiceProvider.updateCollectionSettings(publishSettings, info)
     local name = info.name
     local publishedCollection = info.publishedCollection
 
+    -- Store settings in LrPrefs immediately so processRenderedPhotos can find them even though
+    -- each LR callback runs in a separate Lua state (module-level tables reset between calls).
+    storePendingSettings(name, {
+        description = collectionSettings.description,
+        license = collectionSettings.license,
+        copyright = collectionSettings.copyright,
+        photo_sorting_column = collectionSettings.photo_sorting_column,
+        photo_sorting_order = collectionSettings.photo_sorting_order,
+        album_sorting_column = collectionSettings.album_sorting_column,
+        album_sorting_order = collectionSettings.album_sorting_order,
+        album_aspect_ratio = collectionSettings.album_aspect_ratio,
+        photo_layout = collectionSettings.photo_layout,
+        album_timeline = collectionSettings.album_timeline,
+        photo_timeline = collectionSettings.photo_timeline,
+        header_id = collectionSettings.header_id,
+        is_public = collectionSettings.is_public,
+        is_link_required = collectionSettings.is_link_required,
+        is_nsfw = collectionSettings.is_nsfw,
+        grants_full_photo_access = collectionSettings.grants_full_photo_access,
+        grants_download = collectionSettings.grants_download,
+        is_password_required = collectionSettings.is_password_required,
+        password = collectionSettings.password,
+    })
+    logger:info('Stored pending settings in prefs for "' .. name .. '"')
+
     LrTasks.startAsyncTask(function()
         local remoteId = info.remoteId
         if (not remoteId or remoteId == '') and publishedCollection then
             remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
         end
 
-        if not remoteId or remoteId == '' then
-            -- Album doesn't exist yet — snapshot settings for processRenderedPhotos
-            logger:info('No remote album for "' .. name .. '" — saving settings for first publish')
-            pendingCollectionSettings[name] = {
-                description = collectionSettings.description,
-                license = collectionSettings.license,
-                copyright = collectionSettings.copyright,
-                photo_sorting_column = collectionSettings.photo_sorting_column,
-                photo_sorting_order = collectionSettings.photo_sorting_order,
-                album_sorting_column = collectionSettings.album_sorting_column,
-                album_sorting_order = collectionSettings.album_sorting_order,
-                album_aspect_ratio = collectionSettings.album_aspect_ratio,
-                photo_layout = collectionSettings.photo_layout,
-                album_timeline = collectionSettings.album_timeline,
-                photo_timeline = collectionSettings.photo_timeline,
-                header_id = collectionSettings.header_id,
-                is_public = collectionSettings.is_public,
-                is_link_required = collectionSettings.is_link_required,
-                is_nsfw = collectionSettings.is_nsfw,
-                grants_full_photo_access = collectionSettings.grants_full_photo_access,
-                grants_download = collectionSettings.grants_download,
-                is_password_required = collectionSettings.is_password_required,
-                password = collectionSettings.password,
-            }
-        else
+        if remoteId and remoteId ~= '' then
+            -- Album already exists — push settings now and clear the prefs entry.
+            logger:info('Remote album found for "' .. name .. '" — applying settings immediately')
+            clearPendingSettings(name)
             saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
         end
+        -- If no remoteId the album doesn't exist yet; the prefs entry stays for
+        -- processRenderedPhotos to consume after it creates the album.
     end)
 end
 
@@ -1464,39 +1477,44 @@ function publishServiceProvider.updateCollectionSetSettings(publishSettings, inf
     local name = info.name
     local publishedCollection = info.publishedCollection
 
+    -- Store settings in LrPrefs immediately — same reasoning as updateCollectionSettings.
+    storePendingSettings(name, {
+        description = collectionSettings.description,
+        license = collectionSettings.license,
+        copyright = collectionSettings.copyright,
+        photo_sorting_column = collectionSettings.photo_sorting_column,
+        photo_sorting_order = collectionSettings.photo_sorting_order,
+        album_sorting_column = collectionSettings.album_sorting_column,
+        album_sorting_order = collectionSettings.album_sorting_order,
+        album_aspect_ratio = collectionSettings.album_aspect_ratio,
+        photo_layout = collectionSettings.photo_layout,
+        album_timeline = collectionSettings.album_timeline,
+        photo_timeline = collectionSettings.photo_timeline,
+        header_id = collectionSettings.header_id,
+        is_public = collectionSettings.is_public,
+        is_link_required = collectionSettings.is_link_required,
+        is_nsfw = collectionSettings.is_nsfw,
+        grants_full_photo_access = collectionSettings.grants_full_photo_access,
+        grants_download = collectionSettings.grants_download,
+        is_password_required = collectionSettings.is_password_required,
+        password = collectionSettings.password,
+    })
+    logger:info('Stored pending settings in prefs for set "' .. name .. '"')
+
     LrTasks.startAsyncTask(function()
         local remoteId = info.remoteId
         if (not remoteId or remoteId == '') and publishedCollection then
             remoteId = resolveRemoteId(publishedCollection, publishSettings, name)
         end
 
-        if not remoteId or remoteId == '' then
-            -- Album doesn't exist yet — snapshot settings for didCreateNewPublishedCollectionSet
-            logger:info('No remote album for set "' .. name .. '" — saving settings for creation')
-            pendingCollectionSettings[name] = {
-                description = collectionSettings.description,
-                license = collectionSettings.license,
-                copyright = collectionSettings.copyright,
-                photo_sorting_column = collectionSettings.photo_sorting_column,
-                photo_sorting_order = collectionSettings.photo_sorting_order,
-                album_sorting_column = collectionSettings.album_sorting_column,
-                album_sorting_order = collectionSettings.album_sorting_order,
-                album_aspect_ratio = collectionSettings.album_aspect_ratio,
-                photo_layout = collectionSettings.photo_layout,
-                album_timeline = collectionSettings.album_timeline,
-                photo_timeline = collectionSettings.photo_timeline,
-                header_id = collectionSettings.header_id,
-                is_public = collectionSettings.is_public,
-                is_link_required = collectionSettings.is_link_required,
-                is_nsfw = collectionSettings.is_nsfw,
-                grants_full_photo_access = collectionSettings.grants_full_photo_access,
-                grants_download = collectionSettings.grants_download,
-                is_password_required = collectionSettings.is_password_required,
-                password = collectionSettings.password,
-            }
-        else
+        if remoteId and remoteId ~= '' then
+            -- Album already exists — push settings now and clear the prefs entry.
+            logger:info('Remote album found for set "' .. name .. '" — applying settings immediately')
+            clearPendingSettings(name)
             saveAlbumSettingsToLychee(publishSettings, remoteId, name, collectionSettings)
         end
+        -- If no remoteId the album doesn't exist yet; the prefs entry stays for
+        -- didCreateNewPublishedCollectionSet / processRenderedPhotos to consume.
     end)
 end
 
