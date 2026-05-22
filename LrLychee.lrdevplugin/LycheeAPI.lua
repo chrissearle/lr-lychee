@@ -306,28 +306,25 @@ end
 -- Returns album table or nil
 function LycheeAPI.findAlbumByTitleUnderParent(settings, title, parentId)
     if parentId then
-        -- Fetch the parent album and search its children
-        local albumDetails, err = LycheeAPI.getAlbumDetails(settings, parentId)
-        if not albumDetails then
-            return nil, err
+        -- Fetch child albums using Album::albums endpoint (Lychee 7.5+, returns { data: [...] })
+        local url = getBaseUrl(settings) .. '/Album::albums?album_id=' .. parentId
+        local headers = buildHeaders(settings)
+        local result = LrHttp.get(url, headers, 30)
+        if not result then
+            return nil, 'Failed to fetch child albums'
+        end
+        local albumsData = jsonDecode(result)
+        if not albumsData then
+            return nil, 'Invalid response fetching child albums'
+        end
+        if type(albumsData) == 'table' and (albumsData.error or albumsData.exception) then
+            return nil, albumsData.message or 'Failed to fetch child albums'
         end
 
-        -- Album details response has: resource.albums (child albums)
-        local resource = albumDetails.resource
-        if resource and resource.albums then
-            for _, album in ipairs(resource.albums) do
-                if album.title == title then
-                    return album, nil
-                end
-            end
-        end
-
-        -- Also check top-level albums field (response structure varies)
-        if albumDetails.albums then
-            for _, album in ipairs(albumDetails.albums) do
-                if album.title == title then
-                    return album, nil
-                end
+        local childAlbums = albumsData.data or {}
+        for _, album in ipairs(childAlbums) do
+            if album.title == title then
+                return album, nil
             end
         end
 
@@ -547,9 +544,9 @@ function LycheeAPI.getAlbumParentId(settings, albumId)
     return nil, nil
 end
 
--- Get album details including photos
+-- Get album details (metadata and parent info) - uses Album::head endpoint (Lychee 7.5+)
 function LycheeAPI.getAlbumDetails(settings, albumId)
-    local url = getBaseUrl(settings) .. '/Album?album_id=' .. albumId
+    local url = getBaseUrl(settings) .. '/Album::head?album_id=' .. albumId
     local headers = buildHeaders(settings)
 
     local result, respHeaders = LrHttp.get(url, headers, 30)
@@ -566,6 +563,29 @@ function LycheeAPI.getAlbumDetails(settings, albumId)
     return response, nil
 end
 
+-- Get photos in an album (paginated) - uses Album::photos endpoint (Lychee 7.5+)
+-- Returns { photos: [...], current_page, last_page, per_page, total } or nil, err
+function LycheeAPI.getAlbumPhotos(settings, albumId, page)
+    local url = getBaseUrl(settings) .. '/Album::photos?album_id=' .. albumId
+    if page and page > 1 then
+        url = url .. '&page=' .. page
+    end
+    local headers = buildHeaders(settings)
+
+    local result, respHeaders = LrHttp.get(url, headers, 30)
+
+    if not result then
+        return nil, 'Failed to get album photos'
+    end
+
+    local response = jsonDecode(result)
+    if type(response) == 'table' and (response.error or response.exception) then
+        return nil, response.message or 'Failed to get album photos'
+    end
+
+    return response, nil
+end
+
 -- Normalize filename for comparison (remove special chars, lowercase)
 local function normalizeFilename(name)
     if not name then return '' end
@@ -577,17 +597,11 @@ end
 
 -- Find a photo in album by original filename
 -- Also accessible as LycheeAPI.findPhotoByFilename for external use
+-- albumData is the response from getAlbumPhotos: { photos: [...] }
 local function findPhotoByFilename(albumData, targetFilename)
-    -- Album response has structure: { resource: { photos: [...] } }
-    local resource = albumData.resource
-    if not resource then
-        logger:warn('No resource in album data')
-        return nil
-    end
-
-    local photos = resource.photos
+    local photos = albumData.photos
     if not photos then
-        logger:warn('No photos in album resource')
+        logger:warn('No photos in album data')
         return nil
     end
 
@@ -724,12 +738,12 @@ function LycheeAPI.uploadPhoto(settings, filePath, albumId, knownPhotoIds)
             LrTasks.sleep(3) -- Longer wait between retries
         end
 
-        albumData, albumErr = LycheeAPI.getAlbumDetails(settings, albumIdStr)
+        albumData, albumErr = LycheeAPI.getAlbumPhotos(settings, albumIdStr)
         if not albumData then
             logger:warn('Album fetch attempt ' .. attempt .. ' failed: ' .. (albumErr or 'unknown'))
         else
             -- Get current photo count
-            local photos = albumData.resource and albumData.resource.photos or {}
+            local photos = albumData.photos or {}
             local currentCount = #photos
             logger:info('Album has ' .. currentCount .. ' photos (attempt ' .. attempt .. ')')
 
