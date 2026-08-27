@@ -195,7 +195,7 @@ Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
 | # | Action | Images | Expected result |
 |---|--------|--------|----------------|
 | 8.1 | Publish a collection whose album exists in Lychee but whose remoteId LR has lost | **Sunset** | Plugin finds the album by name and reuses it; no duplicate created |
-| 8.2 | Create "Test Album Empty", publish with 0 photos | none | No error; album created and empty |
+| 8.2 | Create "Test Album Empty" with no photos | none | **Not reachable — mark N/A.** With `supportsIncrementalPublish = 'only'` an empty collection has nothing to publish, so Lightroom offers no publish action and `processRenderedPhotos` never runs. No Lychee album is created, same as an empty collection set (6.1). Verify only that nothing errors |
 | 8.3 | Two collections both named "Dupe" — one at root, one inside a set | root: **Ocean** · set: **Sunset** | Each publishes to its own correctly-scoped album, each with its own photo row |
 | 8.4 | Delete a photo manually in the Lychee UI, then re-publish | **Ocean** in Test Album A | Re-uploaded cleanly, no error dialog |
 | 8.5 | Special characters in filename | **Tromsø** | Covered by 6.3 — upload succeeds and URL is correct |

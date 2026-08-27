@@ -165,6 +165,18 @@ function publishServiceProvider.getCollectionBehaviorInfo(publishSettings)
     }
 end
 
+-- Build a gallery-facing URL. The user may enter the gallery URL with a trailing
+-- slash; LycheeAPI.getBaseUrl strips it for API calls, but these URLs are built by
+-- plain concatenation and would otherwise come out as "http://host//gallery/...".
+local function galleryUrl(publishSettings, ...)
+    local url = (publishSettings.gallery_url or ''):gsub('/+$', '')
+    local parts = { url, 'gallery' }
+    for _, part in ipairs({ ... }) do
+        parts[#parts + 1] = tostring(part)
+    end
+    return table.concat(parts, '/')
+end
+
 -- Helper to validate publish settings
 local function validateSettings(publishSettings)
     if not publishSettings.gallery_url or publishSettings.gallery_url == '' then
@@ -187,7 +199,7 @@ local function storeRemoteAlbum(target, albumId, publishSettings, label)
         return false
     end
 
-    local albumUrl = publishSettings.gallery_url .. '/gallery/' .. albumId
+    local albumUrl = galleryUrl(publishSettings, albumId)
 
     local function apply()
         target:setRemoteId(albumId)
@@ -437,7 +449,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     -- rendition:recordPublishedPhotoId/Url for photos. publishedCollectionInfo has no
     -- .publishedCollection here, so setRemoteId/setRemoteUrl had nothing to write to -
     -- that is why newly published albums showed no Published Album URL.
-    local albumUrl = publishSettings.gallery_url .. '/gallery/' .. albumId
+    local albumUrl = galleryUrl(publishSettings, albumId)
 
     local recOk, recErr = pcall(function()
         exportSession:recordRemoteCollectionId(albumId)
@@ -632,7 +644,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         storePhotoHash(duplicateId, fileHash(photoPath))
                         rendition:recordPublishedPhotoId(duplicateId)
                         rendition:recordPublishedPhotoUrl(
-                            publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. duplicateId
+                            galleryUrl(publishSettings, albumId, duplicateId)
                         )
                         updatePhotoMetadata(duplicateId)
                     else
@@ -652,7 +664,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                             storePhotoHash(uploadResult.id, fileHash(photoPath))
                             rendition:recordPublishedPhotoId(uploadResult.id)
                             rendition:recordPublishedPhotoUrl(
-                                publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. uploadResult.id
+                                galleryUrl(publishSettings, albumId, uploadResult.id)
                             )
                             -- Update metadata on the new copy
                             updatePhotoMetadata(uploadResult.id)
@@ -729,7 +741,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                                 storePhotoHash(uploadResult.id, renderedHash)
                                 rendition:recordPublishedPhotoId(uploadResult.id)
                                 rendition:recordPublishedPhotoUrl(
-                                    publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. uploadResult.id
+                                    galleryUrl(publishSettings, albumId, uploadResult.id)
                                 )
                             else
                                 table.insert(failures, {
@@ -747,7 +759,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         -- Must call recordPublishedPhotoId before recordPublishedPhotoUrl
                         rendition:recordPublishedPhotoId(existingPhotoId)
                         rendition:recordPublishedPhotoUrl(
-                            publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. existingPhotoId
+                            galleryUrl(publishSettings, albumId, existingPhotoId)
                         )
                     end
                 end
@@ -767,7 +779,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                     -- Record the published photo ID
                     rendition:recordPublishedPhotoId(uploadResult.id)
                     rendition:recordPublishedPhotoUrl(
-                        publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. uploadResult.id
+                        galleryUrl(publishSettings, albumId, uploadResult.id)
                     )
                 else
                     table.insert(failures, {
@@ -895,7 +907,7 @@ function publishServiceProvider.getCollectionUrl(publishSettings, publishedColle
 
     local remoteId = publishedCollectionInfo.remoteId
     if remoteId and remoteId ~= '' then
-        return publishSettings.gallery_url .. '/gallery/' .. remoteId
+        return galleryUrl(publishSettings, remoteId)
     end
 
     -- No remoteId yet — return gallery root rather than nil (avoids error dialog)
