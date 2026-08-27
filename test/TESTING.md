@@ -208,7 +208,8 @@ Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
 | # | Action | Images | Expected result |
 |---|--------|--------|----------------|
 | 9.1 | Select → right-click → Remove from Published Collection | **Rings** in Test Album A | Rings deleted from that Lychee album only; Sunset and Ocean remain |
-| 9.2 | Delete a published collection that still has photos | "Dupe" (root) with **Ocean** | Album and its photo row deleted. Test Album A's copy of Ocean is a separate row and is unaffected |
+| 9.2 | Delete a published collection that still has photos, choosing **Delete** in Lightroom's dialog | any published collection | Album and its photos deleted from Lychee. Log: `Deleted album for collection "..."` |
+| 9.3 | Same, but choose **leave the photos in their published location** | any published collection | **Album and photos remain in Lychee, by design.** `deletePublishedCollection` is not called at all — nothing is logged. The collection disappears from Lightroom only |
 
 > 9.2 is the direct test of the `from_id` fix. Before it, removing a photo returned
 > **422 "The from id field is required."** on Lychee 7.7+.
@@ -260,4 +261,5 @@ afterwards.
 - [ ] Published Photo URL shown after publish (2.4, R3)
 - [ ] No duplicate albums on second publish (8.1)
 - [ ] Removing a photo in LR removes it from that Lychee album (9.1)
+- [ ] Deleting a collection removes its Lychee album (9.2), and "leave photos" keeps it (9.3)
 - [ ] Special characters in filename (6.3 / 8.5)
