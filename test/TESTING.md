@@ -42,9 +42,33 @@ for every endpoint the plugin uses are in `test/api-samples/`.
 - Test library of at least 5–10 photos with varied titles/captions
 - Lychee instance accessible in a browser
 
-> **Note on duplicates:** Lychee deduplicates photos by checksum. Uploading the same
-> image bytes twice is silently dropped rather than creating a second photo. Use
-> genuinely distinct images when a test calls for multiple photos.
+### Test images
+
+The repo ships six deliberately distinct images in `test/images/`. **Import that
+whole folder into Lightroom before starting.** Every test below names the exact
+images to use — the assignments are not arbitrary, because photo state carries
+between sections (an image removed in §3 is reused in §6).
+
+| Short name | File | Reserved for |
+|---|---|---|
+| **Sunset** | `LycheeTest-01-Sunset.jpg` | Test Album A; develop-edit in 3.1 |
+| **Ocean** | `LycheeTest-02-Ocean.jpg` | Test Album A; metadata-only change in 3.2 |
+| **Forest** | `LycheeTest-03-Forest.jpg` | Test Album A until 3.5, then free for §6 |
+| **Rings** | `LycheeTest-04-Rings.jpg` | Added in 3.4; header photo in 4.11 |
+| **Checks** | `LycheeTest-05-Checks.jpg` | Throwaway album for rename/delete (§5) |
+| **Tromsø** | `Tromsø Café (2).jpg` | Child Album (§6) — non-ASCII, space, parens |
+
+> **Duplicates behave specifically — verified against 7.7.5.** Lychee deduplicates by
+> **checksum** (byte-identical only, not perceptual):
+>
+> - Same bytes uploaded **to the same album** → silently dropped, no second photo.
+> - Same bytes uploaded **to a different album** → **one shared photo row** linked to
+>   both albums. Both albums show it, with the *same* photo ID.
+>
+> This is why removing a photo from one album must send `from_id` — otherwise there
+> is no way to say "remove it from *this* album only". Test 8.3 relies on it.
+>
+> Never substitute copies of one file for "several photos" — §3.4 would look broken.
 
 ---
 
@@ -61,137 +85,171 @@ for every endpoint the plugin uses are in `test/api-samples/`.
 
 ## 2. Collection (Album) — Create & First Publish
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 2.1 | Create new Published Collection "Test Album A" | No album created in Lychee yet (album created on first publish) |
-| 2.2 | Add 3 photos to "Test Album A", publish | Album "Test Album A" appears in Lychee at root level with 3 photos |
-| 2.3 | After publish: check LR collection panel | Collection shows a clickable Published Album URL |
-| 2.4 | After publish: check published photos in LR | Each photo shows a Published Photo URL |
-| 2.5 | Click the Published Album URL | Opens correct Lychee album page in browser |
+Creates **Test Album A**, the album most later sections build on.
+
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 2.1 | Create Published Collection "Test Album A" | — | No album created in Lychee yet (created on first publish) |
+| 2.2 | Add 3 photos, publish | **Sunset, Ocean, Forest** | Album "Test Album A" appears at Lychee root with exactly those 3 |
+| 2.3 | Right-click the collection → **Go to Published Collection** | — | Opens `/gallery/<album>`. A Published Album URL is also shown in the collection panel |
+| 2.4 | Right-click a published photo → **Go to Published Photo** | — | Browser opens `/gallery/<album>/<photo>` for that photo. **Lightroom shows no photo URL as text** — the menu action is the only surface, so do not look in the Metadata panel |
+| 2.5 | Click the Published Album URL | — | Opens the correct Lychee album |
+
+**State after §2:** Test Album A = Sunset, Ocean, Forest.
 
 ---
 
 ## 3. Photo Publishing — Re-publish Scenarios
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 3.1 | Edit one of the published photos in Develop module, publish | Photo is replaced in Lychee (same album), same photo ID or new one, URL updated |
-| 3.2 | Change title/caption of a published photo (no develop edit), publish | Photo is NOT re-uploaded; only metadata updated in Lychee. Photo count unchanged |
-| 3.3 | Publish the same collection again with no changes | Nothing changes in Lychee; no errors |
-| 3.4 | Add a 4th photo to the collection, publish | Only the new photo is uploaded; existing 3 are untouched |
-| 3.5 | Remove one photo from the collection (Remove from Published Collection) | Photo is deleted from Lychee album |
+All on **Test Album A**. Run in order — 3.4 and 3.5 change the contents.
+
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 3.1 | Develop-edit (e.g. crop or −1 exposure), publish | **Sunset** | Sunset replaced in Lychee; others untouched; URL updated |
+| 3.2 | Change title *and* caption, no develop edit, publish | **Ocean** | Not re-uploaded; metadata updated in Lychee; photo count still 3 |
+| 3.3 | Publish again with no changes | — | Nothing changes; no errors; **0 uploads** |
+| 3.4 | Add a 4th photo, publish | **Rings** | Only Rings uploads; Sunset/Ocean/Forest untouched |
+| 3.5 | Remove from Published Collection | **Forest** | Forest deleted from the Lychee album; 3 remain |
+
+**State after §3:** Test Album A = Sunset, Ocean, Rings. **Forest is now free.**
 
 ---
 
 ## 4. Album Settings
 
-For each test: open Edit Collection dialog → set value → click OK → publish (if not yet published) or trigger re-apply.
+All on **Test Album A**. Open Edit Collection → set value → OK → publish if not yet published.
 
 | # | Setting | Action | Expected result |
 |---|---------|--------|----------------|
 | 4.1 | Description | Set "My test description" | Lychee album shows description |
 | 4.2 | License | Set to "CC BY" | Lychee album license updated |
 | 4.3 | Copyright | Set "© Test" | Lychee album copyright updated |
-| 4.4 | Photo sort | Set "Upload date, Ascending" | Photos in Lychee sorted accordingly |
-| 4.5 | Album sort | Set "Title, Ascending" | Sub-albums sorted accordingly (visible in Lychee) |
-| 4.6 | Photo layout | Set "Masonry" | Lychee album layout updated |
-| 4.7 | Visibility — Public | Set Public = on | Album accessible without login in Lychee |
-| 4.8 | Visibility — Private | Set Public = off | Album requires login to view |
-| 4.9 | Visibility — NSFW | Set NSFW = on | Album flagged as NSFW in Lychee |
-| 4.10 | Visibility — Password | Set password required + password | Lychee album requires password to view |
-| 4.11 | Header photo | Select a photo from dropdown | Lychee album shows selected header photo |
-| 4.12 | Header compact | Select "Use compact header" | Lychee album shows compact header |
-| 4.13 | Settings on **new** album | Set settings before first publish | Settings applied automatically on first publish (not lost) |
-| 4.14 | Settings on **existing** album | Change settings after album exists | Settings applied immediately when clicking OK (no re-publish needed) |
+| 4.4 | Photo sort | "Upload date, Ascending" | Photos sorted accordingly |
+| 4.5 | Album sort | "Title, Ascending" | Sub-albums sorted accordingly |
+| 4.6 | Photo layout | "Masonry" | Layout updated |
+| 4.7 | Visibility — Public | Public = on | Accessible without login |
+| 4.8 | Visibility — Private | Public = off | Requires login |
+| 4.9 | Visibility — NSFW | NSFW = on | Flagged NSFW |
+| 4.10 | Visibility — Password | Password required + password | Requires password |
+| 4.11 | Header photo | Select **Rings** from the dropdown | Lychee album shows Rings as header. Dropdown must list all 3 current photos |
+| 4.12 | Header compact | Select "Use compact header" | Compact header shown |
+| 4.13 | Settings on **new** album | Create "Test Album Settings" with description + Public **before** first publish, add **Ocean**, publish | Settings applied on first publish, not lost (see R1) |
+| 4.14 | Settings on **existing** album | Change description on Test Album A | Applied immediately on OK, no re-publish needed |
+
+> 4.13 puts Ocean in a second album. Expect the **same photo ID** as in Test Album A —
+> that is the shared-row behaviour, not a bug.
 
 ---
 
 ## 5. Album Rename & Delete
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 5.1 | Right-click collection → Rename to "Test Album A Renamed" | Lychee album title updates to "Test Album A Renamed" |
-| 5.2 | Right-click collection → Delete Published Collection, confirm | Album and all its photos deleted from Lychee |
-| 5.3 | Delete collection, cancel at confirmation | Nothing deleted in Lychee |
+Uses a **throwaway** collection so Test Album A survives for §7.
+
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 5.1 | Create "Test Album Doomed", add 1 photo, publish | **Checks** | Album created with Checks |
+| 5.2 | Right-click → Rename to "Test Album Doomed Renamed" | — | Lychee album title updates |
+| 5.3 | Right-click → Delete Published Collection, **cancel** | — | Nothing deleted in Lychee |
+| 5.4 | Right-click → Delete Published Collection, **confirm** | — | Album and Checks deleted from Lychee |
+
+**State after §5:** Doomed album gone. **Checks is free again.**
 
 ---
 
 ## 6. Collection Sets (Nested Albums)
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 6.1 | Create Published Collection Set "Parent Set" | Album "Parent Set" created in Lychee at root level |
-| 6.2 | Create Published Collection "Child Album" inside "Parent Set" | Album "Child Album" created in Lychee nested under "Parent Set" |
-| 6.3 | Add photos to "Child Album", publish | Photos appear in the nested Lychee album |
-| 6.4 | Published Album URL for "Child Album" | URL points to the nested album (not the root) |
-| 6.5 | Create a second level: Set → Set → Collection | Three-level nesting works correctly in Lychee |
-| 6.6 | Rename "Parent Set" | Lychee album renamed, children unaffected |
-| 6.7 | Delete "Parent Set" (confirm) | Parent album and all children (albums + photos) deleted from Lychee |
-| 6.8 | Open Edit Collection Set dialog | Album settings panel shows and loads existing settings from Lychee |
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 6.1 | Create Published Collection Set "Parent Set" | — | Album "Parent Set" created at Lychee root |
+| 6.2 | Create Published Collection "Child Album" inside "Parent Set" | — | "Child Album" created nested under "Parent Set" |
+| 6.3 | Add 1 photo to Child Album, publish | **Tromsø** | Photo appears in the nested album. **Also covers 8.5** (non-ASCII + space + parens) |
+| 6.4 | Check Child Album's Published Album URL | — | Points at the nested album, not the root |
+| 6.5 | Create Set → Set → Collection: "Parent Set" › "Inner Set" › "Deep Album", add 1 photo, publish | **Forest** (freed in 3.5) | Three-level nesting correct in Lychee |
+| 6.6 | Rename "Parent Set" to "Parent Set Renamed" | — | Renamed in Lychee; children unaffected |
+| 6.7 | **Do this only after §7.** Delete "Parent Set Renamed", confirm | — | Parent, Inner Set, Child Album, Deep Album and their photos all deleted (cascade verified at API level) |
+| 6.8 | Open Edit Collection Set dialog on "Parent Set Renamed" | — | Settings panel loads existing settings from Lychee |
 
 ---
 
 ## 7. Moving Albums (Drag & Drop)
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 7.1 | Drag "Test Album A" (at root) into "Parent Set" | On next publish, album moves to be nested under "Parent Set" in Lychee |
-| 7.2 | Drag "Child Album" out of set to root level | On next publish, album moves to root in Lychee |
-| 7.3 | Move album into a different set | On next publish, album appears under the new parent in Lychee |
-| 7.4 | Verify photos are preserved after a move | All photos still present in album after move |
+Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
+
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 7.1 | Drag "Test Album A" (root) into "Parent Set Renamed", publish | — | Album moves to nest under the set in Lychee |
+| 7.2 | Drag "Child Album" out of the set to root, publish | — | Child Album moves to root |
+| 7.3 | Drag "Test Album A" into "Inner Set", publish | — | Appears under the new parent |
+| 7.4 | Verify contents after the moves | **Sunset, Ocean, Rings** | All 3 still present, same photo IDs, no re-upload |
 
 ---
 
 ## 8. Duplicate / Edge Cases
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 8.1 | Publish a collection where the album already exists in Lychee (remoteId lost, e.g. fresh LR catalog) | Plugin finds existing album by name and re-uses it; no duplicate created |
-| 8.2 | Publish collection with 0 photos | No error; album is created/found but empty |
-| 8.3 | Two collections with the same name in different sets | Each publishes to its own correctly-scoped album in Lychee |
-| 8.4 | Re-publish a photo that was manually deleted from Lychee | Photo is re-uploaded cleanly; no error dialog |
-| 8.5 | Upload photo with special characters in filename | Photo uploads and URL is correct |
-| 8.6 | Publish with gallery_url that has a trailing slash | URL in LR and links in Lychee still correct (no double slash) |
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 8.1 | Publish a collection whose album exists in Lychee but whose remoteId LR has lost | **Sunset** | Plugin finds the album by name and reuses it; no duplicate created |
+| 8.2 | Create "Test Album Empty", publish with 0 photos | none | No error; album created and empty |
+| 8.3 | Two collections both named "Dupe" — one at root, one inside a set | root: **Ocean** · set: **Sunset** | Each publishes to its own correctly-scoped album. Photo IDs are **shared** with Test Album A's copies — expected |
+| 8.4 | Delete a photo manually in the Lychee UI, then re-publish | **Ocean** in Test Album A | Re-uploaded cleanly, no error dialog |
+| 8.5 | Special characters in filename | **Tromsø** | Covered by 6.3 — upload succeeds and URL is correct |
+| 8.6 | Set gallery_url with a trailing slash, publish | — | URLs correct, no double slash |
 
 ---
 
 ## 9. Photo Deletion
 
-| # | Action | Expected result |
-|---|--------|----------------|
-| 9.1 | Select published photos → right-click → Remove from Published Collection | Confirmation shown (if LR prompts); photos deleted from Lychee |
-| 9.2 | Delete album that still has photos | All photos deleted from Lychee along with the album |
+| # | Action | Images | Expected result |
+|---|--------|--------|----------------|
+| 9.1 | Select → right-click → Remove from Published Collection | **Rings** in Test Album A | Rings deleted from that Lychee album only; Sunset and Ocean remain |
+| 9.2 | Delete a published collection that still has photos | "Dupe" (root) with **Ocean** | Album deleted. Ocean survives in Test Album A — it is a shared row |
+
+> 9.2 is the direct test of the `from_id` fix. Before it, removing a photo returned
+> **422 "The from id field is required."** on Lychee 7.7+.
 
 ---
 
 ## 10. Regression — Previously Reported Bugs
 
-| # | Bug | Test | Expected result |
-|---|-----|------|----------------|
-| R1 | Settings lost on first publish | Set album settings before first publish, publish | Settings applied (not default/blank) |
-| R2 | `knownPhotoIds` always empty → re-upload loop | Re-publish an existing album with 5 photos, no edits | 0 photos re-uploaded; no delete+reupload in Lychee |
-| R3 | Published photo URL missing after re-publish | Re-publish an unedited collection | All photos retain their Published Photo URL in LR |
-| R4 | Published album URL missing | Publish a new collection | Collection shows Published Album URL in LR panel immediately after publish |
-| R5 | Album URL for old-code albums | Albums published before the nested-album feature was added | Still show correct Published Album URL |
+| # | Bug | Test | Images | Expected result |
+|---|-----|------|--------|----------------|
+| R1 | Settings lost on first publish | Covered by 4.13 | **Ocean** | Description and Public applied, not blank |
+| R2 | `knownPhotoIds` always empty → re-upload loop | Re-publish Test Album A unchanged | **Sunset, Ocean, Rings** | Log: `Starting uploads with 3 known photo IDs`; **0 uploaded** |
+| R3 | Published photo URL missing after re-publish | Re-publish unchanged, then right-click each photo → Go to Published Photo | same 3 | Each still opens its own correct photo page (no URL is displayed as text — see 2.4) |
+| R4 | **Published album URL missing** | Publish a brand-new collection "Test Album R4" with 1 photo | **Checks** (freed in §5) | URL shown in the LR panel immediately. Log: `Stored remoteId <id> and URL <url> on collection "Test Album R4"` |
+| R5 | Album URL for old-code albums | Any album published before the nested-album work | — | Still shows a correct Published Album URL |
+
+> **R4 is the current blocker.** It is the one thing the code fix has not yet been
+> observed doing in Lightroom. Run it early.
+
+---
+
+## Suggested Order
+
+State carries between sections, so run: **§1 → §2 → §3 → §10 (R2–R4) → §4 → §5 → §6.1–6.6 → §7 → §6.7 → §8 → §9**.
+
+§10 goes early because R2–R4 are the previously-reported bugs — a failure there stops
+the sweep. §6.7 is deferred because it destroys the set §7 needs.
 
 ---
 
 ## Checklist Summary
 
-Before shipping a release, all of the following should pass:
-
-- [ ] First publish of a root collection
-- [ ] First publish of a nested collection (inside a set)  
-- [ ] Re-publish with no changes (no re-upload, no errors)
-- [ ] Re-publish after image edit (photo replaced in Lychee)
-- [ ] Re-publish after metadata-only change (metadata updated, no upload)
-- [ ] Album settings applied on first publish of new album
-- [ ] Album settings updated on existing album without re-publish
-- [ ] Collection renamed → Lychee album renamed
-- [ ] Collection deleted → Lychee album deleted
-- [ ] Collection set created → Lychee nested album created
-- [ ] Collection dragged into set → album moves in Lychee on next publish
-- [ ] Published Album URL shown after publish
-- [ ] Published Photo URL shown after publish
-- [ ] No duplicate albums created on second publish
-- [ ] Deleting a photo from LR removes it from Lychee
+- [ ] First publish of a root collection (2.2)
+- [ ] First publish of a nested collection (6.3)
+- [ ] Re-publish with no changes — no re-upload, no errors (3.3, R2)
+- [ ] Re-publish after image edit — photo replaced (3.1)
+- [ ] Re-publish after metadata-only change — no upload (3.2)
+- [ ] Album settings applied on first publish of a new album (4.13, R1)
+- [ ] Album settings updated on existing album without re-publish (4.14)
+- [ ] Collection renamed → Lychee album renamed (5.2)
+- [ ] Collection deleted → Lychee album deleted (5.4)
+- [ ] Collection set created → nested Lychee album (6.1, 6.2)
+- [ ] Three-level nesting (6.5)
+- [ ] Collection dragged into a set → album moves (7.1)
+- [ ] Photos preserved across a move (7.4)
+- [ ] **Published Album URL shown after publish (2.3, R4)**
+- [ ] Published Photo URL shown after publish (2.4, R3)
+- [ ] No duplicate albums on second publish (8.1)
+- [ ] Removing a photo in LR removes it from that Lychee album (9.1)
+- [ ] Special characters in filename (6.3 / 8.5)

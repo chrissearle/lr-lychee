@@ -104,10 +104,39 @@ Available section IDs: `exportLocation`, `fileNaming`, `video`, `imageSettings`,
 
 #### Remote ID Management
 
-- `publishedCollection:getRemoteId()` — must be called inside `catalog:withReadAccessDo()`
-- `publishedCollection:setRemoteId(id)` — must be called inside `catalog:withWriteAccessDo('reason', fn)`
+**There are two different mechanisms, and using the wrong one fails silently.**
+
+*Inside `processRenderedPhotos`* — use the export session:
+
+```lua
+exportSession:recordRemoteCollectionId(albumId)
+exportSession:recordRemoteCollectionUrl(albumUrl)
+```
+
+`exportContext.publishedCollectionInfo` has **no `publishedCollection` field** in this
+callback, so `setRemoteId`/`setRemoteUrl` have nothing to write to. Guarding with
+`if publishedCollectionInfo.publishedCollection then ... end` silently skips the write
+and the collection ends up with no Published Album URL and no stored remote ID — with
+nothing in the log to say so. This mirrors `rendition:recordPublishedPhotoId/Url` for
+photos; collections and photos work the same way here.
+
+*Everywhere else* (dialog callbacks such as `viewForCollectionSettings`, where an
+`info.publishedCollection` object genuinely exists) — use the catalog:
+
+- `publishedCollection:getRemoteId()` — inside `catalog:withReadAccessDo()`
+- `publishedCollection:setRemoteId(id)` — inside `catalog:withWriteAccessDo('reason', fn)`
 - `publishedCollection:setRemoteUrl(url)` — same write access requirement
-- Remote IDs can be nil for collections created before the plugin stored them — always have a fallback
+
+`publishedCollectionInfo` fields to expect in `processRenderedPhotos`:
+`isDefaultCollection`, `name`, `parents`, and — **only once something has recorded
+them** — `remoteId` and `remoteUrl`. The field is `remoteId`; there is no
+`remoteCollectionId`. Note `pairs()` will not list `remoteId`/`remoteUrl` until they
+have a value, so an empty-looking dump does not mean the field is unsupported.
+
+`remoteId` being nil is what makes `isNewAlbum` true, which drives album creation and
+skips move detection — so a plugin that never records it will re-create albums and
+break drag-into-set moves. Remote IDs can also be legitimately nil for collections
+created before the plugin stored them; `resolveRemoteId` falls back to a title search.
 
 ### LrObservableTable
 
@@ -176,6 +205,78 @@ end)
 ```
 
 **Important**: These calls yield, so they can only be used inside async tasks or other yielding contexts (like `processRenderedPhotos`).
+
+**Never wrap them in `pcall`.** Yielding across a `pcall` boundary raises:
+
+```
+Yielding is not allowed within a C or metamethod call
+```
+
+This fails at runtime only, and if you were using the `pcall` for safety it looks
+exactly like the operation legitimately failing — so it silently takes your fallback
+path forever. Put the `pcall` *inside* the access block, around the non-yielding
+lookups:
+
+```lua
+local failure
+catalog:withReadAccessDo(function()
+    local ok, err = pcall(function()
+        -- getPublishServices, getPublishedPhotos, getEditedFlag, ...
+    end)
+    if not ok then failure = err end
+end)
+```
+
+### Detecting whether a photo's image was edited
+
+Lightroom hands `processRenderedPhotos` every photo that needs republishing, but does
+**not** say why. Distinguishing "the image was edited" (re-upload) from "only metadata
+changed" (PATCH) is left to the plugin, and the obvious routes are all dead ends:
+
+- `rendition.publishedPhoto` is `nil` in this callback.
+- `rendition.wasEditedSinceLastPublish` is **not an SDK property** — it reads nil
+  always, silently downgrading every develop edit to a metadata-only update.
+- The catalog route (`getPublishServices` → `getPublishedPhotos` →
+  `LrPublishedPhoto:getEditedFlag()`) **yields from inside the read-access block**, so
+  it cannot be guarded with `pcall`, and the SDK guide does not document
+  `getPublishServices`' signature well enough to call it unguarded.
+
+What works: **hash the rendered file's image data** and keep it in `LrPrefs` keyed by
+the remote photo id. On re-publish, compare the fresh render against the stored hash.
+This needs no SDK support and cannot yield.
+
+Hashing the *whole* file does not work: Lightroom writes title and caption into the
+exported JPEG's APP1/APP13 metadata segments, so a caption-only change alters the bytes
+without touching a pixel, and every metadata edit looks like an image edit. Skip the
+metadata by walking the JPEG segment headers to the **SOS marker (`0xFFDA`)** and
+hashing from there:
+
+```lua
+-- verified: two renders differing only in a COM/APP segment hash identically,
+-- while a genuinely different image does not
+local function jpegImageDataOffset(data)
+    if data:byte(1) ~= 0xFF or data:byte(2) ~= 0xD8 then return nil end
+    local i = 3
+    while i + 3 <= #data do
+        if data:byte(i) ~= 0xFF then return nil end
+        local marker = data:byte(i + 1)
+        if marker == 0xDA then return i end                       -- image data
+        if marker >= 0xD0 and marker <= 0xD9 then i = i + 2       -- standalone
+        else i = i + 2 + (data:byte(i + 2) * 256 + data:byte(i + 3)) end
+    end
+    return nil
+end
+```
+
+Non-JPEG renders (the service also allows PNG) fall back to hashing the whole file,
+which errs towards re-uploading.
+
+Every site that calls `rendition:recordPublishedPhotoId` must also store the hash, and
+re-uploads must clear the old id's entry, or the prefs drift out of sync.
+
+When the hash is missing or unreadable, **re-upload**: a redundant upload is cheap, a
+stale image left online is not. Photos published before hashing existed re-upload once,
+then settle.
 
 ---
 

@@ -16,13 +16,16 @@ local LrErrors = import 'LrErrors'
 local LrColor = import 'LrColor'
 local LrApplication = import 'LrApplication'
 local LrPrefs = import 'LrPrefs'
+local LrMD5 = import 'LrMD5'
+local LrFileUtils = import 'LrFileUtils'
 
 local logger = LrLogger('LycheePlugin')
 logger:enable('logfile')
 
 local LycheeAPI = require 'LycheeAPI'
 
-local pluginVersion = '1.2.0'
+-- Keep in sync with VERSION in Info.lua (used only for the log banner).
+local pluginVersion = '1.2.1'
 
 local publishServiceProvider = {}
 
@@ -40,6 +43,69 @@ end
 
 local function clearPendingSettings(name)
     LrPrefs.prefsForPlugin()['pending_' .. name] = nil
+end
+
+-- Remember the MD5 of the file we last uploaded for a given Lychee photo, so a
+-- re-publish can tell "the image changed" from "only metadata changed".
+--
+-- The SDK gives us no usable signal for this inside processRenderedPhotos:
+-- rendition.publishedPhoto is nil, rendition.wasEditedSinceLastPublish is not a real
+-- property, and the catalog route (getPublishServices -> getPublishedPhotos ->
+-- getEditedFlag) yields from inside the read-access block, so it cannot be guarded
+-- with pcall. Hashing the rendered file is self-contained and needs no SDK support.
+local function storePhotoHash(photoId, hash)
+    LrPrefs.prefsForPlugin()['hash_' .. tostring(photoId)] = hash
+end
+
+local function getPhotoHash(photoId)
+    return LrPrefs.prefsForPlugin()['hash_' .. tostring(photoId)]
+end
+
+local function clearPhotoHash(photoId)
+    LrPrefs.prefsForPlugin()['hash_' .. tostring(photoId)] = nil
+end
+
+-- Offset (1-based) of the JPEG SOS marker - where compressed image data begins.
+-- Everything before it is metadata and coding tables. Lightroom writes title and
+-- caption into APP1/APP13 segments there, so a caption change alters the file's
+-- bytes without touching a single pixel; hashing from SOS onwards ignores that.
+local function jpegImageDataOffset(data)
+    if #data < 4 then return nil end
+    if data:byte(1) ~= 0xFF or data:byte(2) ~= 0xD8 then return nil end
+    local i = 3
+    while i + 3 <= #data do
+        if data:byte(i) ~= 0xFF then return nil end
+        local marker = data:byte(i + 1)
+        if marker == 0xDA then
+            return i
+        end
+        if marker >= 0xD0 and marker <= 0xD9 then
+            i = i + 2
+        else
+            local len = data:byte(i + 2) * 256 + data:byte(i + 3)
+            if len < 2 then return nil end
+            i = i + 2 + len
+        end
+    end
+    return nil
+end
+
+-- MD5 of a rendered photo's image data, or nil if the file cannot be read.
+local function fileHash(path)
+    local contents = LrFileUtils.readFile(path)
+    if not contents then
+        return nil
+    end
+
+    local offset = jpegImageDataOffset(contents)
+    if offset then
+        return LrMD5.digest(contents:sub(offset))
+    end
+
+    -- Not a JPEG (the service also allows PNG). Hash the whole file: a metadata
+    -- change will then look like an image change and force a re-upload, which is
+    -- the safe direction to be wrong in.
+    return LrMD5.digest(contents)
 end
 
 -- Forward declaration (defined later, but called from processRenderedPhotos)
@@ -96,9 +162,6 @@ end
 -- setRemoteId/setRemoteUrl require catalog write access (see DEVELOPMENT.md,
 -- "Remote ID Management"). Called without the gate they fail silently, which is
 -- what left newly published albums with no Published Album URL in the LR panel.
---
--- Some callers may already hold write access, in which case opening a nested
--- one raises; fall back to a direct call in that case.
 local function storeRemoteAlbum(target, albumId, publishSettings, label)
     if not target or not albumId or albumId == '' then
         return false
@@ -111,23 +174,10 @@ local function storeRemoteAlbum(target, albumId, publishSettings, label)
         target:setRemoteUrl(albumUrl)
     end
 
+    -- No pcall around withWriteAccessDo - it yields, and yielding across a pcall
+    -- boundary raises "Yielding is not allowed within a C or metamethod call".
     local catalog = LrApplication.activeCatalog()
-    local ok, err = pcall(function()
-        catalog:withWriteAccessDo('Set Lychee album ID', apply)
-    end)
-
-    if not ok then
-        -- Most likely we are already inside a write transaction - retry directly.
-        local directOk, directErr = pcall(apply)
-        if not directOk then
-            logger:warn('Could not store remoteId on ' .. label .. ': ' ..
-                tostring(err) .. ' / ' .. tostring(directErr))
-            return false
-        end
-        logger:info('Stored remoteId ' .. albumId .. ' on ' .. label ..
-            ' (direct, already in write transaction)')
-        return true
-    end
+    catalog:withWriteAccessDo('Set Lychee album ID', apply)
 
     logger:info('Stored remoteId ' .. albumId .. ' and URL ' .. albumUrl .. ' on ' .. label)
     return true
@@ -278,8 +328,13 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     -- 1. If we already have a remoteId, use it directly (but check if it needs moving)
     -- 2. Otherwise, ensure ancestor albums exist and find/create under the correct parent
     progressScope:setCaption('Finding or creating album...')
+    -- publishedCollectionInfo.remoteId is populated from whatever we last recorded via
+    -- exportSession:recordRemoteCollectionId. It is nil only on a genuinely new
+    -- collection - if it were ever wrongly nil, the move detection below could not run
+    -- and dragging into a set would create a duplicate album instead of moving one.
     local albumId = publishedCollectionInfo.remoteId
     local isNewAlbum = not albumId or albumId == ''
+    logger:info('Collection "' .. collectionName .. '" remoteId=' .. tostring(albumId))
 
     -- Determine the expected parent album from the collection set hierarchy
     local expectedParentId = ensureAncestorAlbums(publishSettings, publishedCollectionInfo.parents)
@@ -326,9 +381,23 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
         return
     end
 
-    -- Store album ID on the published collection
-    storeRemoteAlbum(publishedCollectionInfo.publishedCollection, albumId, publishSettings,
-        'collection "' .. collectionName .. '"')
+    -- Record the album against the published collection.
+    --
+    -- Inside processRenderedPhotos the supported route is the exportSession, mirroring
+    -- rendition:recordPublishedPhotoId/Url for photos. publishedCollectionInfo has no
+    -- .publishedCollection here, so setRemoteId/setRemoteUrl had nothing to write to -
+    -- that is why newly published albums showed no Published Album URL.
+    local albumUrl = publishSettings.gallery_url .. '/gallery/' .. albumId
+
+    local recOk, recErr = pcall(function()
+        exportSession:recordRemoteCollectionId(albumId)
+        exportSession:recordRemoteCollectionUrl(albumUrl)
+    end)
+    if recOk then
+        logger:info('Recorded collection id ' .. albumId .. ' and URL ' .. albumUrl)
+    else
+        logger:warn('Could not record collection id/URL: ' .. tostring(recErr))
+    end
 
     -- Apply collection settings for newly created albums.
     -- Settings are stored in LrPrefs by updateCollectionSettings (which runs in a separate
@@ -509,6 +578,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                                 logger:warn('Could not delete old copy of ' .. existingPhotoId .. ': ' .. (deleteErr or 'unknown'))
                             end
                         end
+                        clearPhotoHash(existingPhotoId)
+                        storePhotoHash(duplicateId, fileHash(photoPath))
                         rendition:recordPublishedPhotoId(duplicateId)
                         rendition:recordPublishedPhotoUrl(
                             publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. duplicateId
@@ -527,6 +598,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
 
                         if uploadResult and uploadResult.id then
                             table.insert(knownPhotoIds, uploadResult.id)
+                            clearPhotoHash(existingPhotoId)
+                            storePhotoHash(uploadResult.id, fileHash(photoPath))
                             rendition:recordPublishedPhotoId(uploadResult.id)
                             rendition:recordPublishedPhotoUrl(
                                 publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. uploadResult.id
@@ -541,12 +614,39 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         end
                     end
                 else
-                    -- Photo is in the current album - normal update flow
-                    -- Check if this is just a metadata update or if the image was edited
-                    local wasEdited = rendition.wasEditedSinceLastPublish
+                    -- Photo is in the current album - normal update flow.
+                    --
+                    -- Lightroom only hands us photos that need republishing at all, so
+                    -- the question here is narrower: did the *image* change (re-upload)
+                    -- or only its metadata (PATCH)? That lives on the published photo as
+                    -- getEditedFlag(). `rendition.wasEditedSinceLastPublish` is not an
+                    -- SDK property - it read nil every time, so every develop edit was
+                    -- silently downgraded to a metadata-only update.
+                    -- Compare the freshly rendered file against the one we last
+                    -- uploaded for this photo. Different bytes means the image itself
+                    -- changed; identical bytes means only metadata did.
+                    local renderedHash = fileHash(photoPath)
+                    local storedHash = getPhotoHash(existingPhotoId)
+                    local wasEdited
+                    local editedVia
+                    if not renderedHash then
+                        -- Could not hash the render. Lightroom only sends photos that
+                        -- need republishing, so re-uploading is the safe default: a
+                        -- redundant upload is cheap, a stale image online is not.
+                        wasEdited = true
+                        editedVia = 'fallback (render unreadable)'
+                    elseif not storedHash then
+                        -- Published before we started recording hashes. Re-upload once;
+                        -- the hash is stored below and later publishes settle down.
+                        wasEdited = true
+                        editedVia = 'fallback (no stored hash)'
+                    else
+                        wasEdited = (renderedHash ~= storedHash)
+                        editedVia = 'file hash'
+                    end
 
                     logger:info('Existing photo ID: ' .. tostring(existingPhotoId))
-                    logger:info('Was edited since last publish: ' .. tostring(wasEdited))
+                    logger:info('Was edited: ' .. tostring(wasEdited) .. ' via ' .. editedVia)
                     logger:info('Title: ' .. tostring(title))
                     logger:info('Caption: ' .. tostring(caption))
 
@@ -575,6 +675,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                             if uploadResult and uploadResult.id then
                                 -- Add to known IDs for subsequent uploads
                                 table.insert(knownPhotoIds, uploadResult.id)
+                                clearPhotoHash(existingPhotoId)
+                                storePhotoHash(uploadResult.id, renderedHash)
                                 rendition:recordPublishedPhotoId(uploadResult.id)
                                 rendition:recordPublishedPhotoUrl(
                                     publishSettings.gallery_url .. '/gallery/' .. albumId .. '/' .. uploadResult.id
@@ -591,6 +693,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         logger:info('Metadata-only update for photo: ' .. existingPhotoId)
                         progressScope:setCaption(string.format('Updating metadata for %s...', photoName))
                         updatePhotoMetadata(existingPhotoId)
+                        storePhotoHash(existingPhotoId, renderedHash)
                         -- Must call recordPublishedPhotoId before recordPublishedPhotoUrl
                         rendition:recordPublishedPhotoId(existingPhotoId)
                         rendition:recordPublishedPhotoUrl(
@@ -608,6 +711,9 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                 if uploadResult and uploadResult.id then
                     -- Add to known IDs for subsequent uploads
                     table.insert(knownPhotoIds, uploadResult.id)
+                    -- Remember what we uploaded, so a later re-publish can tell an image
+                    -- edit from a metadata-only change
+                    storePhotoHash(uploadResult.id, fileHash(photoPath))
                     -- Record the published photo ID
                     rendition:recordPublishedPhotoId(uploadResult.id)
                     rendition:recordPublishedPhotoUrl(
@@ -657,6 +763,7 @@ function publishServiceProvider.deletePhotosFromPublishedCollection(publishSetti
     if success then
         -- Mark all photos as deleted
         for _, photoId in ipairs(arrayOfPhotoIds) do
+            clearPhotoHash(photoId)
             deletedCallback(photoId)
         end
     else
