@@ -442,26 +442,47 @@ end
 
 -- Rename an album
 function LycheeAPI.renameAlbum(settings, albumId, newTitle)
-    local url = getBaseUrl(settings) .. '/Album'
-    local headers = buildHeaders(settings)
+    -- PATCH /Album requires the complete editable field set. Sending only
+    -- album_id + title returns 422 ("The license field is required. (and 11 more
+    -- errors)"). Read the album first and resend everything with the new title, so
+    -- the rename neither clobbers existing settings nor depends on some later call
+    -- happening to push a complete body - which is what was masking this for
+    -- collections, and would not have saved collection sets.
+    local details, detailsErr = LycheeAPI.getAlbumDetails(settings, albumId)
+    if not details or not details.resource then
+        return false, detailsErr or 'Could not read album before renaming'
+    end
 
-    local body = jsonEncode({
-        album_id = albumId,
+    local resource = details.resource
+    local editable = resource.editable or {}
+    local photoSorting = editable.photo_sorting or {}
+    local albumSorting = editable.album_sorting or {}
+
+    -- header_id comes back as the sentinel 'compact', but goes out as the pair
+    -- is_compact = true / header_id = null
+    local headerId = resource.header_id
+    local isCompact = (headerId == 'compact')
+    if isCompact then
+        headerId = nil
+    end
+
+    return LycheeAPI.updateAlbumSettings(settings, albumId, {
         title = newTitle,
+        description = resource.description,
+        copyright = resource.copyright,
+        license = editable.license,
+        photo_sorting_column = photoSorting.column,
+        photo_sorting_order = photoSorting.order,
+        album_sorting_column = albumSorting.column,
+        album_sorting_order = albumSorting.order,
+        album_aspect_ratio = editable.aspect_ratio,
+        photo_layout = editable.photo_layout,
+        album_timeline = editable.album_timeline,
+        photo_timeline = editable.photo_timeline,
+        is_compact = isCompact,
+        is_pinned = editable.is_pinned,
+        header_id = headerId,
     })
-
-    local result, respHeaders = LrHttp.post(url, body, headers, 'PATCH', 30)
-
-    if not result then
-        return false, 'Failed to rename album'
-    end
-
-    local response = jsonDecode(result)
-    if type(response) == 'table' and (response.error or response.exception) then
-        return false, response.message or 'Failed to rename album'
-    end
-
-    return true, nil
 end
 
 -- Move album(s) to a new parent album (or to root if newParentId is nil)
@@ -1016,7 +1037,8 @@ function LycheeAPI.updatePhoto(settings, photoId, albumId, metadata)
     return response or {}, nil
 end
 
--- Update album settings (everything except title, which is handled by renameAlbum)
+-- Update album settings. Also used by renameAlbum, which reads current state and
+-- resends it with a new title.
 -- Uses PATCH /Album with all editable properties
 function LycheeAPI.updateAlbumSettings(settings, albumId, albumData)
     local url = getBaseUrl(settings) .. '/Album'
