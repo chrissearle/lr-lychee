@@ -289,6 +289,18 @@ endpoint the plugin uses live in `test/api-samples/`. A running instance documen
 itself at `{gallery_url}/docs/api` — the full OpenAPI 3.1 spec is embedded in that
 page (`/docs/api.json` itself 404s).
 
+### Non-ASCII text
+
+Lychee returns non-ASCII as `\uXXXX` escapes (`"\u00a9 Test"` for `© Test`). The
+plugin's hand-rolled `jsonDecode` must decode those to UTF-8 — an unknown-escape
+fallback that keeps the letter after the backslash silently turns `© Test` into
+`u00a9 Test`, and because the settings dialog loads from the server and writes back,
+the corruption is persisted and compounds on every round trip.
+
+Lightroom runs Lua 5.1, so there is no `utf8` library; encode code points by hand and
+handle surrogate pairs for anything above the BMP. `jsonEncode` needs no matching
+change — raw UTF-8 bytes are valid JSON on the way out.
+
 ### Content type
 
 Every request must send **`Content-Type: application/json`** as well as

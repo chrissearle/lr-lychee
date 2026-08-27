@@ -63,10 +63,15 @@ between sections (an image removed in §3 is reused in §6).
 >
 > - Same bytes uploaded **to the same album** → silently dropped, no second photo.
 > - Same bytes uploaded **to a different album** → **one shared photo row** linked to
->   both albums. Both albums show it, with the *same* photo ID.
+>   both albums, with the *same* photo ID.
 >
-> This is why removing a photo from one album must send `from_id` — otherwise there
-> is no way to say "remove it from *this* album only". Test 8.3 relies on it.
+> In practice you will rarely see the shared case when publishing from Lightroom:
+> Lightroom embeds title and caption into the exported JPEG, and a metadata-only
+> update PATCHes Lychee's database without rewriting the stored file — so the next
+> export of the "same" photo has different bytes and becomes a separate row.
+>
+> Sharing is still possible, which is why removing a photo from one album must send
+> `from_id`: otherwise there is no way to say "remove it from *this* album only".
 >
 > Never substitute copies of one file for "several photos" — §3.4 would look broken.
 
@@ -124,20 +129,21 @@ All on **Test Album A**. Open Edit Collection → set value → OK → publish i
 | 4.1 | Description | Set "My test description" | Lychee album shows description |
 | 4.2 | License | Set to "CC BY" | Lychee album license updated |
 | 4.3 | Copyright | Set "© Test" | Lychee album copyright updated |
-| 4.4 | Photo sort | "Upload date, Ascending" | Photos sorted accordingly |
-| 4.5 | Album sort | "Title, Ascending" | Sub-albums sorted accordingly |
+| 4.4 | Photo sort | "Created at, Ascending" | Photos sorted accordingly. (There is no "Upload date" — Lychee calls it `created_at`) |
+| 4.5 | Album sort | "Title, Ascending" | Sub-albums sorted accordingly (only visible once §6 creates sub-albums) |
 | 4.6 | Photo layout | "Masonry" | Layout updated |
 | 4.7 | Visibility — Public | Public = on | Accessible without login |
 | 4.8 | Visibility — Private | Public = off | Requires login |
 | 4.9 | Visibility — NSFW | NSFW = on | Flagged NSFW |
-| 4.10 | Visibility — Password | Password required + password | Requires password |
+| 4.10 | Visibility — Password | **Set Public = on first** (4.8 turned it off), then password required + password `testpass` | Album requires the password to view. A private album is unreachable by link, so password protection only means anything on a public album |
 | 4.11 | Header photo | Select **Rings** from the dropdown | Lychee album shows Rings as header. Dropdown must list all 3 current photos |
 | 4.12 | Header compact | Select "Use compact header" | Compact header shown |
 | 4.13 | Settings on **new** album | Create "Test Album Settings" with description + Public **before** first publish, add **Ocean**, publish | Settings applied on first publish, not lost (see R1) |
 | 4.14 | Settings on **existing** album | Change description on Test Album A | Applied immediately on OK, no re-publish needed |
 
-> 4.13 puts Ocean in a second album. Expect the **same photo ID** as in Test Album A —
-> that is the shared-row behaviour, not a bug.
+> 4.13 puts Ocean in a second album. Expect a **separate photo ID** from Test Album A's
+> copy — see the duplicates note in §0: Lightroom embeds metadata in the export, so the
+> bytes differ and checksum dedup does not trigger.
 
 ---
 
@@ -190,7 +196,7 @@ Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
 |---|--------|--------|----------------|
 | 8.1 | Publish a collection whose album exists in Lychee but whose remoteId LR has lost | **Sunset** | Plugin finds the album by name and reuses it; no duplicate created |
 | 8.2 | Create "Test Album Empty", publish with 0 photos | none | No error; album created and empty |
-| 8.3 | Two collections both named "Dupe" — one at root, one inside a set | root: **Ocean** · set: **Sunset** | Each publishes to its own correctly-scoped album. Photo IDs are **shared** with Test Album A's copies — expected |
+| 8.3 | Two collections both named "Dupe" — one at root, one inside a set | root: **Ocean** · set: **Sunset** | Each publishes to its own correctly-scoped album, each with its own photo row |
 | 8.4 | Delete a photo manually in the Lychee UI, then re-publish | **Ocean** in Test Album A | Re-uploaded cleanly, no error dialog |
 | 8.5 | Special characters in filename | **Tromsø** | Covered by 6.3 — upload succeeds and URL is correct |
 | 8.6 | Set gallery_url with a trailing slash, publish | — | URLs correct, no double slash |
@@ -202,7 +208,7 @@ Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
 | # | Action | Images | Expected result |
 |---|--------|--------|----------------|
 | 9.1 | Select → right-click → Remove from Published Collection | **Rings** in Test Album A | Rings deleted from that Lychee album only; Sunset and Ocean remain |
-| 9.2 | Delete a published collection that still has photos | "Dupe" (root) with **Ocean** | Album deleted. Ocean survives in Test Album A — it is a shared row |
+| 9.2 | Delete a published collection that still has photos | "Dupe" (root) with **Ocean** | Album and its photo row deleted. Test Album A's copy of Ocean is a separate row and is unaffected |
 
 > 9.2 is the direct test of the `from_id` fix. Before it, removing a photo returned
 > **422 "The from id field is required."** on Lychee 7.7+.

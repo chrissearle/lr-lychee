@@ -51,6 +51,26 @@ local function jsonEncode(tbl)
     end
 end
 
+-- Encode a Unicode code point as UTF-8. Lightroom runs Lua 5.1, which has no utf8
+-- library, so this is done by hand.
+local function codepointToUtf8(cp)
+    if cp < 0x80 then
+        return string.char(cp)
+    elseif cp < 0x800 then
+        return string.char(0xC0 + math.floor(cp / 0x40),
+                           0x80 + (cp % 0x40))
+    elseif cp < 0x10000 then
+        return string.char(0xE0 + math.floor(cp / 0x1000),
+                           0x80 + (math.floor(cp / 0x40) % 0x40),
+                           0x80 + (cp % 0x40))
+    else
+        return string.char(0xF0 + math.floor(cp / 0x40000),
+                           0x80 + (math.floor(cp / 0x1000) % 0x40),
+                           0x80 + (math.floor(cp / 0x40) % 0x40),
+                           0x80 + (cp % 0x40))
+    end
+end
+
 local function jsonDecode(str)
     if not str or str == '' then
         return nil
@@ -82,6 +102,23 @@ local function jsonDecode(str)
                 elseif escaped == '\\' then result = result .. '\\'
                 elseif escaped == '"' then result = result .. '"'
                 elseif escaped == '/' then result = result .. '/'
+                elseif escaped == 'u' then
+                    -- \uXXXX - Lychee returns non-ASCII this way ("\u00a9" for ©).
+                    -- Without this branch the backslash was dropped and the literal
+                    -- "u00a9" kept, silently corrupting the value on every round trip.
+                    local cp = tonumber(str:sub(pos + 1, pos + 4), 16)
+                    pos = pos + 4
+                    if cp then
+                        -- Surrogate pair for code points above the BMP
+                        if cp >= 0xD800 and cp <= 0xDBFF and str:sub(pos + 1, pos + 2) == '\\u' then
+                            local lo = tonumber(str:sub(pos + 3, pos + 6), 16)
+                            if lo and lo >= 0xDC00 and lo <= 0xDFFF then
+                                cp = 0x10000 + (cp - 0xD800) * 0x400 + (lo - 0xDC00)
+                                pos = pos + 6
+                            end
+                        end
+                        result = result .. codepointToUtf8(cp)
+                    end
                 else result = result .. escaped
                 end
                 pos = pos + 1

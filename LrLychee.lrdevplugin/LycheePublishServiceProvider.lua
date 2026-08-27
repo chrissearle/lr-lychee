@@ -973,7 +973,7 @@ local PHOTO_SORT_COLUMN_ITEMS = {
     { title = 'Taken at', value = 'taken_at' },
     { title = 'Title', value = 'title' },
     { title = 'Description', value = 'description' },
-    { title = 'Starred', value = 'is_starred' },
+    { title = 'Highlighted', value = 'is_highlighted' },
     { title = 'Type', value = 'type' },
 }
 
