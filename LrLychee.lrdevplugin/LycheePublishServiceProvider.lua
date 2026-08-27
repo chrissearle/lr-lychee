@@ -90,6 +90,49 @@ local function validateSettings(publishSettings)
     return true
 end
 
+-- Store a Lychee album ID and its gallery URL on a published collection or
+-- collection set.
+--
+-- setRemoteId/setRemoteUrl require catalog write access (see DEVELOPMENT.md,
+-- "Remote ID Management"). Called without the gate they fail silently, which is
+-- what left newly published albums with no Published Album URL in the LR panel.
+--
+-- Some callers may already hold write access, in which case opening a nested
+-- one raises; fall back to a direct call in that case.
+local function storeRemoteAlbum(target, albumId, publishSettings, label)
+    if not target or not albumId or albumId == '' then
+        return false
+    end
+
+    local albumUrl = publishSettings.gallery_url .. '/gallery/' .. albumId
+
+    local function apply()
+        target:setRemoteId(albumId)
+        target:setRemoteUrl(albumUrl)
+    end
+
+    local catalog = LrApplication.activeCatalog()
+    local ok, err = pcall(function()
+        catalog:withWriteAccessDo('Set Lychee album ID', apply)
+    end)
+
+    if not ok then
+        -- Most likely we are already inside a write transaction - retry directly.
+        local directOk, directErr = pcall(apply)
+        if not directOk then
+            logger:warn('Could not store remoteId on ' .. label .. ': ' ..
+                tostring(err) .. ' / ' .. tostring(directErr))
+            return false
+        end
+        logger:info('Stored remoteId ' .. albumId .. ' on ' .. label ..
+            ' (direct, already in write transaction)')
+        return true
+    end
+
+    logger:info('Stored remoteId ' .. albumId .. ' and URL ' .. albumUrl .. ' on ' .. label)
+    return true
+end
+
 -- Walk the parents chain and ensure all ancestor albums exist on Lychee.
 -- Creates any missing ancestor albums automatically.
 -- Returns the innermost parent's Lychee album ID (or nil for root-level).
@@ -284,12 +327,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     end
 
     -- Store album ID on the published collection
-    if publishedCollectionInfo.publishedCollection then
-        publishedCollectionInfo.publishedCollection:setRemoteId(albumId)
-        publishedCollectionInfo.publishedCollection:setRemoteUrl(
-            publishSettings.gallery_url .. '/gallery/' .. albumId
-        )
-    end
+    storeRemoteAlbum(publishedCollectionInfo.publishedCollection, albumId, publishSettings,
+        'collection "' .. collectionName .. '"')
 
     -- Apply collection settings for newly created albums.
     -- Settings are stored in LrPrefs by updateCollectionSettings (which runs in a separate
@@ -333,9 +372,9 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
     -- 2. Preserve existing metadata when updating (e.g., don't blank title if user only changed caption)
     local knownPhotoIds = {}
     local knownPhotoData = {}  -- Lookup table by photo ID
-    local albumDetails = LycheeAPI.getAlbumDetails(publishSettings, albumId)
-    if albumDetails and albumDetails.resource and albumDetails.resource.photos then
-        for _, photo in ipairs(albumDetails.resource.photos) do
+    local albumPhotos = LycheeAPI.getAlbumPhotos(publishSettings, albumId)
+    if albumPhotos and albumPhotos.photos then
+        for _, photo in ipairs(albumPhotos.photos) do
             if photo.id then
                 table.insert(knownPhotoIds, photo.id)
                 knownPhotoData[photo.id] = photo
@@ -378,7 +417,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
             -- Returns the photo ID if found, nil otherwise.
             local function findDuplicateInAlbum(fileName)
                 -- Refresh album data to catch recently-uploaded photos
-                local freshAlbumData = LycheeAPI.getAlbumDetails(publishSettings, albumId)
+                local freshAlbumData = LycheeAPI.getAlbumPhotos(publishSettings, albumId)
                 if freshAlbumData then
                     local matchId = LycheeAPI.findPhotoByFilename(freshAlbumData, fileName)
                     if matchId then
@@ -462,7 +501,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                     if duplicateId then
                         -- Already in the target album - just adopt it
                         logger:info('Photo already in target album as ' .. duplicateId .. ', skipping re-upload')
-                        -- Still delete the old copy from the source album
+                        -- Still delete the old copy from the source album. No albumId
+                        -- hint: the old copy is in the *previous* album, not this one.
                         if duplicateId ~= existingPhotoId then
                             local deleteOk, deleteErr = LycheeAPI.deletePhotos(publishSettings, { existingPhotoId })
                             if not deleteOk then
@@ -475,7 +515,8 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         )
                         updatePhotoMetadata(duplicateId)
                     else
-                        -- Delete from old album (best effort - may fail if album was already deleted)
+                        -- Delete from old album (best effort - may fail if album was already
+                        -- deleted). No albumId hint: the copy is in the previous album.
                         local deleteOk, deleteErr = LycheeAPI.deletePhotos(publishSettings, { existingPhotoId })
                         if not deleteOk then
                             logger:warn('Could not delete old copy of ' .. existingPhotoId .. ': ' .. (deleteErr or 'unknown'))
@@ -514,7 +555,7 @@ function publishServiceProvider.processRenderedPhotos(functionContext, exportCon
                         -- Lychee will read title/description/tags from EXIF on upload
                         progressScope:setCaption(string.format('Re-uploading %s...', photoName))
 
-                        local deleteSuccess, deleteErr = LycheeAPI.deletePhotos(publishSettings, { existingPhotoId })
+                        local deleteSuccess, deleteErr = LycheeAPI.deletePhotos(publishSettings, { existingPhotoId }, albumId)
                         if not deleteSuccess then
                             table.insert(failures, {
                                 photo = photo,
@@ -689,10 +730,8 @@ function publishServiceProvider.didCreateNewPublishedCollectionSet(publishSettin
     logger:info('Created album for collection set "' .. info.name .. '": ' .. albumId)
 
     -- Store the album ID on the collection set
-    info.publishedCollectionSet:setRemoteId(albumId)
-    info.publishedCollectionSet:setRemoteUrl(
-        publishSettings.gallery_url .. '/gallery/' .. albumId
-    )
+    storeRemoteAlbum(info.publishedCollectionSet, albumId, publishSettings,
+        'collection set "' .. info.name .. '"')
 
     -- Apply pending settings if the user configured them during creation
     local pendingSet = getPendingSettings(info.name)
@@ -1177,9 +1216,8 @@ saveAlbumSettingsToLychee = function(publishSettings, remoteId, collectionName, 
     -- Fetch current album state to preserve is_pinned (not exposed in our UI)
     local albumData, fetchErr = LycheeAPI.getAlbumDetails(publishSettings, remoteId)
     local editable = {}
-    if albumData then
-        local resource = albumData.resource or albumData
-        editable = resource.editable or {}
+    if albumData and albumData.resource then
+        editable = albumData.resource.editable or {}
     end
 
     -- Derive header fields from collectionSettings.header_id
@@ -1261,16 +1299,8 @@ local function resolveRemoteId(publishedCollection, publishSettings, collectionN
             local albumId = album.id
             logger:info('Found album by title: ' .. albumId)
             -- Also fix the catalog so future lookups work
-            if publishedCollection then
-                local catalog = LrApplication.activeCatalog()
-                catalog:withWriteAccessDo('Set remote ID', function()
-                    publishedCollection:setRemoteId(albumId)
-                    publishedCollection:setRemoteUrl(
-                        publishSettings.gallery_url .. '/gallery/' .. albumId
-                    )
-                end)
-                logger:info('Stored remoteId in catalog for future use')
-            end
+            storeRemoteAlbum(publishedCollection, albumId, publishSettings,
+                'collection "' .. tostring(collectionName) .. '" (recovered by title)')
             return albumId
         else
             logger:info('Could not find album by title: ' .. (findErr or 'not found'))
@@ -1300,14 +1330,19 @@ function publishServiceProvider.viewForCollectionSettings(f, publishSettings, in
                     return
                 end
 
-                local resource = albumData.resource or albumData
+                local resource = albumData.resource
+                if not resource then
+                    logger:warn('Album::head returned no resource for ' .. tostring(remoteId))
+                    return
+                end
                 local policy = resource.policy or {}
                 local editable = resource.editable or {}
                 local photoSorting = editable.photo_sorting or {}
                 local albumSorting = editable.album_sorting or {}
 
-                -- Update header popup items with album photos (bound via observable)
-                local photos = resource.photos or {}
+                -- Fetch photos separately (Album::head doesn't include them)
+                local albumPhotos = LycheeAPI.getAlbumPhotos(publishSettings, remoteId)
+                local photos = (albumPhotos and albumPhotos.photos) or {}
                 collectionSettings.header_items = buildHeaderItems(photos)
                 logger:info('Loaded ' .. #photos .. ' photos for header selection')
 
@@ -1420,14 +1455,19 @@ function publishServiceProvider.viewForCollectionSetSettings(f, publishSettings,
                     return
                 end
 
-                local resource = albumData.resource or albumData
+                local resource = albumData.resource
+                if not resource then
+                    logger:warn('Album::head returned no resource for ' .. tostring(remoteId))
+                    return
+                end
                 local policy = resource.policy or {}
                 local editable = resource.editable or {}
                 local photoSorting = editable.photo_sorting or {}
                 local albumSorting = editable.album_sorting or {}
 
-                -- Update header popup items with album photos (bound via observable)
-                local photos = resource.photos or {}
+                -- Fetch photos separately (Album::head doesn't include them)
+                local albumPhotos = LycheeAPI.getAlbumPhotos(publishSettings, remoteId)
+                local photos = (albumPhotos and albumPhotos.photos) or {}
                 collectionSettings.header_items = buildHeaderItems(photos)
 
                 collectionSettings.description = resource.description or ''

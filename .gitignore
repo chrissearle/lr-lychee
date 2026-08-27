@@ -1,1 +1,10 @@
 LycheePlugin.log
+
+# Reference material that can be fetched rather than vendored:
+#  - AdobeSDK.md          https://developer.adobe.com/lightroom-classic/
+#  - lychee-api-*.json    {gallery_url}/docs/api  (spec is embedded in the page)
+docs/
+
+# Local test rig runtime state (bind mounts + generated secrets)
+test/lychee/
+test/.env

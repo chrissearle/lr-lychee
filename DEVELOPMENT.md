@@ -183,6 +183,18 @@ end)
 
 Base URL: `{gallery_url}/api/v2`
 
+**Verified against Lychee 7.7.5** (2026-08-27). Captured responses for every
+endpoint the plugin uses live in `test/api-samples/`. A running instance documents
+itself at `{gallery_url}/docs/api` — the full OpenAPI 3.1 spec is embedded in that
+page (`/docs/api.json` itself 404s).
+
+### Content type
+
+Every request must send **`Content-Type: application/json`** as well as
+`Accept: application/json`. Without the Content-Type header the API returns
+**406 `UnexpectedContentType`** ("Content type `json` required") - even for GETs
+with no body. `buildHeaders()` sets both.
+
 ### Authentication
 
 All requests use Bearer token authentication:
@@ -198,21 +210,33 @@ Token is generated in Lychee under user settings (Edit My User).
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/Albums::tree` | Get full album tree |
-| GET | `/Album?album_id={id}` | Get album details (includes photos, editable, policy) |
-| POST | `/Album` | Create album (`title`, `parent_id`) |
+| GET | `/Albums` | Root-level albums only - `albums`, `smart_albums`, `shared_albums`, ... |
+| GET | `/Album::head?album_id={id}` | Album metadata - `{ config, resource }`. **No photos, no child albums** |
+| GET | `/Album::photos?album_id={id}` | Paginated photos - `{ photos, current_page, last_page, per_page, total }` |
+| GET | `/Album::albums?album_id={id}` | Child albums - `{ data: [...] }` |
+| POST | `/Album` | Create album (`title`, `parent_id`). Returns a **bare unquoted ID** as `text/html` |
 | PATCH | `/Album` | Update album properties |
-| POST | `/Album::move` | Move album to new parent |
-| DELETE | `/Album` | Delete album |
+| POST | `/Album::move` | Move album to new parent. 204 on success |
+| DELETE | `/Album` | Delete album (cascades to children + photos). 204 on success |
+
+**`GET /Album` was removed in Lychee 7.5** and split into the three `Album::*`
+endpoints above. `GET /Albums` returns only *root* albums - nested albums are not
+in that list, so recursing via `Album::albums` is the only way to walk the tree.
 
 #### Photos
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/Photo::upload` | Upload photo (multipart) |
+| POST | `/Photo` | Upload photo (multipart). **Not** `/Photo::upload` |
 | PATCH | `/Photo` | Update photo metadata |
-| DELETE | `/Photo` | Delete photos |
+| DELETE | `/Photo` | Delete photos - `photo_ids[]` **and `from_id`** as query params |
+| GET | `/Photo/{photo_id}/albums` | Albums containing a photo - `[{ id, title }]` |
 | POST | `/Photo::move` | Move photos between albums |
+
+**`DELETE /Photo` requires `from_id`** (the album the photos are being removed
+from) as well as `photo_ids[]`. Omitting it returns **422** - "The from id field is
+required." When the caller doesn't know the album, `LycheeAPI.deletePhotos`
+resolves it via `GET /Photo/{photo_id}/albums`.
 
 #### Protection Policy
 
@@ -222,18 +246,18 @@ Token is generated in Lychee under user settings (Edit My User).
 
 ### Album Details Response Structure
 
-`GET /Album?album_id={id}` returns:
+`GET /Album::head?album_id={id}` returns `{ config, resource }`. Note there is **no
+`photos` array** - fetch photos separately with `Album::photos`:
 
 ```json
 {
+  "config": { "...": "viewer/layout flags" },
   "resource": {
     "id": "24-char-hex-string",
     "title": "Album Name",
     "description": "...",
     "copyright": "...",
-    "photos": [
-      { "id": "24-char-hex", "title": "Photo Title", "original_name": "DSC_1234.jpg" }
-    ],
+    "parent_id": null,
     "editable": {
       "license": "none|reserved|CC0|CC-BY-4.0|...",
       "photo_sorting": { "column": "created_at|taken_at|title|...", "order": "ASC|DESC" },
@@ -261,17 +285,22 @@ Token is generated in Lychee under user settings (Edit My User).
 
 ### PATCH /Album Required Fields
 
-When updating album properties, these fields are **required** even if unchanged:
+When updating album properties, **all fourteen** of these are required even if
+unchanged (per the 7.7.5 spec - sending a subset returns 422):
 
 ```json
 {
-  "album_id": "...",
-  "title": "...",
-  "is_compact": false,
-  "is_pinned": false,
-  "header_id": null
+  "album_id": "...", "title": "...", "license": "none",
+  "description": null, "copyright": null,
+  "photo_sorting_column": null, "album_sorting_column": null,
+  "album_aspect_ratio": null, "photo_layout": null,
+  "album_timeline": null, "photo_timeline": null,
+  "is_compact": false, "is_pinned": false, "header_id": null
 }
 ```
+
+`photo_sorting_order` and `album_sorting_order` are optional, as are `tags` and
+`slug`.
 
 - `is_compact` — derived from `header_id == 'compact'` (boolean)
 - `header_id` — null for default, or a 24-char photo ID for a specific header photo
@@ -282,25 +311,50 @@ When updating album properties, these fields are **required** even if unchanged:
 
 ```json
 {
-  "albumID": "...",
+  "album_id": "...",
   "is_public": false,
   "is_link_required": false,
   "is_nsfw": false,
   "grants_full_photo_access": false,
   "grants_download": false,
-  "is_password_required": false,
   "grants_upload": false
 }
 ```
 
 **Note**: `grants_upload` is required even though we don't expose it in the UI — always send `false`.
+`password` is the only optional field; `is_password_required` is returned by the API
+but is not accepted as input. Returns 201 with the resulting policy.
 
 ### Photo Upload
 
-Multipart POST to `/Photo::upload`:
-- `album_id` — target album
-- File field with the photo data
-- Returns the uploaded photo's ID (after matching via album refresh)
+Multipart `POST /Photo` with `album_id`, `file_name`, `uuid_name` (empty),
+`extension` (empty), `chunk_number=1`, `total_chunks=1`, and the `file` part.
+
+The response is an `UploadMetaResource`, **not** the photo:
+
+```json
+{
+  "file_name": "Test Photo (1).jpg", "extension": ".jpg",
+  "uuid_name": "ovW7znrnmlOa10F-.jpg", "stage": "ready",
+  "chunk_number": 1, "total_chunks": 1,
+  "expected_id": "XjBKS2D2GbxzyvReRiAbYLDq",
+  "title": null, "description": null
+}
+```
+
+**`expected_id` (Lychee 7.7+) is optimistic, not a promise.** The import runs on
+the queue worker, and **Lychee deduplicates by checksum**: upload bytes that already
+exist and the upload is silently dropped, no photo is added to the album, and the
+`expected_id` is never allocated. Verified - a second upload of identical bytes left
+the album at one photo and `PATCH /Photo` on its `expected_id` returned 404.
+
+So `uploadPhoto` treats `expected_id` as a *candidate*: it polls `Album::photos` and
+returns it only once that id actually appears, falling back to filename matching
+otherwise. Matching on id is far more reliable than on filename, because...
+
+**Photos come back with `original_name: null`** and the filename in `title`. The
+`original_name or title` fallback in `findPhotoByFilename` is load-bearing, not
+defensive.
 
 ### Header Image States
 
@@ -315,12 +369,16 @@ In the PATCH request, this is split into two fields:
 - `is_compact = false` + `header_id = null` → default mode
 - `is_compact = false` + `header_id = "photo-id"` → specific photo
 
-### Album Tree Response
+### Walking the Album Tree
 
-`GET /Albums::tree` returns a flat list of albums with parent relationships. Each album has:
-- `id` — 24-character hex string
-- `title` — album name
-- `parent_id` — parent album ID or null for root
+There is no single tree call in use. `GET /Albums` gives **root albums only**;
+descend with `GET /Album::albums?album_id={id}` (`{ data: [...] }`) one level at a
+time. `findAlbumByTitleUnderParent` relies on this to scope a title lookup to the
+right parent, which is what makes two same-named collections in different sets work.
+
+`resource.parent_id` from `Album::head` is `null` for root-level albums and the
+parent's id otherwise; it updates correctly after `Album::move`, so it is a reliable
+basis for the "has this collection been dragged elsewhere?" check.
 
 ---
 
@@ -338,7 +396,8 @@ Many old collections don't have a stored `remoteId`. The `resolveRemoteId` funct
 
 Before uploading, check if a photo with the same filename already exists in the album:
 
-1. Refresh album data via `getAlbumDetails()`
+1. Refresh album data via `getAlbumPhotos()` (not `getAlbumDetails` - `Album::head`
+   carries no photos)
 2. Use `findPhotoByFilename()` to match by `original_name` or `title`
 3. Matching is normalized (case-insensitive, special chars stripped)
 4. If found, skip upload and use the existing photo's ID
