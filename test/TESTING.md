@@ -166,14 +166,14 @@ Uses a **throwaway** collection so Test Album A survives for §7.
 
 | # | Action | Images | Expected result |
 |---|--------|--------|----------------|
-| 6.1 | Create Published Collection Set "Parent Set" | — | Album "Parent Set" created at Lychee root |
+| 6.1 | Create Published Collection Set "Parent Set" | — | **Nothing in Lychee yet.** A set's album is created lazily — `ensureAncestorAlbums` makes it when a child collection first publishes. Log shows `Stored pending settings in prefs for set "Parent Set"` |
 | 6.2 | Create Published Collection "Child Album" inside "Parent Set" | — | "Child Album" created nested under "Parent Set" |
 | 6.3 | Add 1 photo to Child Album, publish | **Tromsø** | Photo appears in the nested album. **Also covers 8.5** (non-ASCII + space + parens) |
 | 6.4 | Check Child Album's Published Album URL | — | Points at the nested album, not the root |
 | 6.5 | Create Set → Set → Collection: "Parent Set" › "Inner Set" › "Deep Album", add 1 photo, publish | **Forest** (freed in 3.5) | Three-level nesting correct in Lychee |
-| 6.6 | Rename "Parent Set" to "Parent Set Renamed" | — | Renamed in Lychee; children unaffected |
-| 6.7 | **Do this only after §7.** Delete "Parent Set Renamed", confirm | — | Parent, Inner Set, Child Album, Deep Album and their photos all deleted (cascade verified at API level) |
-| 6.8 | Open Edit Collection Set dialog on "Parent Set Renamed" | — | Settings panel loads existing settings from Lychee |
+| 6.6 | Rename "Parent Set" to "Parent Set Renamed", then **Mark to Republish** a photo in a collection under it and publish | — | Lightroom never notifies a plugin that a collection *set* was renamed, so it syncs during the next publish of a descendant. A publish with nothing to do does **not** call `processRenderedPhotos`, so it will not sync — Mark to Republish first. Log: `Set name check: ...` then `Collection set renamed in Lightroom: "..." -> "..."`. Children unaffected |
+| 6.7 | Open the Edit Collection Set dialog, set a description and licence | — | Panel loads existing settings from Lychee (set equivalent of 4.11), and the new values apply to **the set's own album only — not recursively to child albums**. That is intended: each Lychee album owns its settings, and cascading would clobber deliberate per-album values. **Run before the delete below — that destroys the set** |
+| 6.8 | **Do this last, after §7.** Delete "Parent Set Renamed", confirm | — | **Known limitation — nothing is deleted in Lychee.** The set, its child sets, child albums and every photo remain in the gallery. Lightroom has no set-delete callback, and deleting a set does not raise the per-collection delete dialog, so `deletePublishedCollection` never fires for the children either. Clean up by hand |
 
 ---
 
@@ -232,10 +232,12 @@ Run **before 6.7**, which destroys the set. Test Album A = Sunset, Ocean, Rings.
 
 ## Suggested Order
 
-State carries between sections, so run: **§1 → §2 → §3 → §10 (R2–R4) → §4 → §5 → §6.1–6.6 → §7 → §6.7 → §8 → §9**.
+State carries between sections, so run: **§1 → §2 → §3 → §10 (R2–R4) → §4 → §5 → §6.1–6.7 → §7 → §6.8 → §8 → §9**.
 
 §10 goes early because R2–R4 are the previously-reported bugs — a failure there stops
-the sweep. §6.7 is deferred because it destroys the set §7 needs.
+the sweep. The set delete is deferred to last because it destroys the set that §7
+needs and that 6.7 inspects — and because nothing in Lychee survives it to inspect
+afterwards.
 
 ---
 

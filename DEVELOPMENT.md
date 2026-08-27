@@ -4,6 +4,20 @@ Technical reference for working on the lr-lychee plugin. Covers Lightroom Classi
 
 ## Adobe Lightroom Classic SDK
 
+> **`docs/AdobeSDK.md` is the Programmer's Guide only — not the API Reference.**
+> It documents `processRenderedPhotos` but has zero mentions of
+> `renamePublishedCollection`, `deletePhotosFromPublishedCollection`,
+> `viewForCollectionSettings` or `metadataThatTriggersRepublish`, all of which are
+> real callbacks this plugin uses. Absence from that file proves nothing about
+> whether a callback exists.
+>
+> The authoritative reference is the SDK download from
+> <https://developer.adobe.com/lightroom-classic/>, unpacked in `docs/` (currently
+> `LrC_15.3_.../API Reference/index.html`). Check it **first** — several hours went
+> into rediscovering by experiment what it states outright. Useful pages:
+> `modules/SDK - Publish service provider.html` (all 42 callbacks),
+> `modules/LrPublishedPhoto.html`, `modules/LrCatalog.html`, plus `Sample Plugins/`.
+
 ### Plugin Structure
 
 - `Info.lua` — plugin manifest, declares `LrExportServiceProvider` pointing to the main provider file
@@ -226,6 +240,69 @@ catalog:withReadAccessDo(function()
     if not ok then failure = err end
 end)
 ```
+
+### Collection sets get no create/rename/delete callbacks
+
+Confirmed against the official SDK 15.3 API Reference in `docs/` (`API
+Reference/modules/SDK - Publish service provider.html`), which lists 42
+`publishServiceProvider` members. These **do not
+exist** and were dead code here until removed:
+
+- `didCreateNewPublishedCollectionSet`
+- `renamePublishedCollectionSet`
+- `deletePublishedCollectionSet`
+- `canRenamePublishedCollection` / `canRenamePublishedCollectionSet` — the real field
+  is the inverse, `disableRenamePublishedCollection` / `...Set`
+
+The set callbacks that *do* exist are only `viewForCollectionSetSettings`,
+`updateCollectionSetSettings`, `endDialogForCollectionSetSettings`,
+`disableRenamePublishedCollectionSet` and `titleForPublishedCollectionSet` — i.e.
+settings and labels, nothing about lifecycle.
+
+Sets also carry no remote id: the `info` table has no `remoteId`, and a long-standing
+Adobe bug leaves the documented `info.publishedCollectionSet` nil. The `parents`
+entries in `processRenderedPhotos` carry only `isDefaultCollection`,
+`localCollectionId` and `name`.
+
+So the plugin handles sets entirely lazily, from `ensureAncestorAlbums`:
+
+- **Creation** — the album is created on the first publish of a descendant. An empty
+  set has no Lychee album yet, by design.
+- **Identity** — the album id is recorded in `LrPrefs` against `localCollectionId`,
+  Lightroom's stable handle for the set.
+- **Rename** — detected in `ensureAncestorAlbums` by comparing `parent.name` against
+  the album's **actual title on the server** (`Album::head`), then synced.
+
+  Do *not* compare against a cached name: if the rename happens while the cache is
+  being populated, cache and Lightroom agree with each other forever while the gallery
+  stays wrong, and the bug conceals itself. The server title cannot go stale, so this
+  also self-heals any existing drift.
+
+  It takes effect during the next publish of a descendant — and note that with
+  `supportsIncrementalPublish = 'only'`, a publish with nothing to do does not call
+  `processRenderedPhotos` at all, so the rename will not sync until something actually
+  publishes (Mark to Republish forces it).
+- **Delete** — *cannot* be handled at all. Deleting a set in Lightroom leaves the
+  **entire subtree** in Lychee: the set's album, nested set albums, every child
+  album and every photo. Verified 2026-08-27.
+
+  There is no set-delete callback, and the children are not covered either:
+  `deletePublishedCollection` is "only invoked when the user clicks the 'Delete'
+  button in the dialog which Lightroom presents... If the user chooses to leave the
+  photos in their published location, the function is not called." Deleting a set
+  never raises that dialog, so nothing fires.
+
+  The same caveat applies to deleting a single collection: if the user picks "leave
+  the photos", the Lychee album survives by design.
+
+  A future mitigation could be an explicit plug-in menu item that lists Lychee albums
+  with no corresponding published collection and offers to remove them. It must stay
+  user-initiated — albums created directly in Lychee must never be swept up.
+
+`reparentPublishedCollection` **does** exist and is not currently used — the plugin
+detects moves at publish time by comparing `getAlbumParentId` with the expected
+parent. Implementing the callback would make moves apply immediately instead of on
+the next publish.
 
 ### Detecting whether a photo's image was edited
 
@@ -526,3 +603,39 @@ When republishing, if a photo's `publishedPhotoId` exists but isn't found in the
 ### Known Photo ID Tracking
 
 The `knownPhotoIds` array tracks IDs of photos already in the album. This prevents the duplicate detection from matching a just-uploaded photo to itself when processing multiple photos in one publish batch.
+
+
+---
+
+## Known follow-ups
+
+Both are viable now that the SDK API Reference is in `docs/`; neither is urgent.
+
+### Use `getEditedFlag()` instead of hashing renders
+
+`LrPublishedPhoto:getEditedFlag()` is documented as "reports whether the associated
+photo has been edited since last published" — exactly the signal the SOS-hash
+heuristic approximates. Reach it via `catalog:getPublishServices(PLUGIN_ID)` →
+published collections → `getPublishedCollections`/`getPublishedPhotos()`.
+
+The earlier attempt failed only because the whole block was wrapped in `pcall`, which
+is illegal around a yielding catalog call. The signature is confirmed:
+`getPublishServices(pluginId)`.
+
+The hash approach works and is verified end to end, but it assumes Lightroom's JPEG
+encoding is deterministic and it keeps state in `LrPrefs` that can be lost. The SDK
+flag is authoritative.
+
+### `reparentPublishedCollection` for immediate moves
+
+Exists and is unused. The plugin currently detects a move at publish time by
+comparing `getAlbumParentId` with the expected parent, so a drag into a set only takes
+effect on the next publish. The callback would make it immediate.
+
+### `getPublishedCollectionByLocalIdentifier` for collection sets
+
+`catalog:getPublishedCollectionByLocalIdentifier(id)` retrieves "a publish collection
+**or collection set**". That would give a real object for a set from
+`parent.localCollectionId`, instead of the `LrPrefs` mapping used now. Marginal:
+there are no set lifecycle callbacks either way, so it would not restore rename or
+delete — but it would survive prefs loss.

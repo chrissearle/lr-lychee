@@ -45,6 +45,29 @@ local function clearPendingSettings(name)
     LrPrefs.prefsForPlugin()['pending_' .. name] = nil
 end
 
+-- Remember which Lychee album belongs to a published collection SET.
+--
+-- Nothing else records this: didCreateNewPublishedCollectionSet never fires, and the
+-- `parents` entries handed to processRenderedPhotos carry only isDefaultCollection,
+-- localCollectionId and name - no remote id and no collection object. Without this,
+-- renamePublishedCollectionSet and deletePublishedCollectionSet both read a nil
+-- info.remoteId and silently do nothing, so deleting a set orphans its whole subtree
+-- in Lychee. localCollectionId is Lightroom's stable handle for the set.
+local function storeSetAlbumId(localCollectionId, albumId)
+    if not localCollectionId or not albumId then return end
+    LrPrefs.prefsForPlugin()['setalbum_' .. tostring(localCollectionId)] = albumId
+end
+
+local function getSetAlbumId(localCollectionId)
+    if not localCollectionId then return nil end
+    return LrPrefs.prefsForPlugin()['setalbum_' .. tostring(localCollectionId)]
+end
+
+local function clearSetAlbumId(localCollectionId)
+    if not localCollectionId then return end
+    LrPrefs.prefsForPlugin()['setalbum_' .. tostring(localCollectionId)] = nil
+end
+
 -- Remember the MD5 of the file we last uploaded for a given Lychee photo, so a
 -- re-publish can tell "the image changed" from "only metadata changed".
 --
@@ -129,11 +152,8 @@ publishServiceProvider.publish_fallbackNameBinding = 'fullname'
 -- Title for the service
 publishServiceProvider.title = 'Lychee Gallery'
 
--- Allow collections to be renamed
-publishServiceProvider.canRenamePublishedCollection = true
-
--- Allow collection sets to be renamed
-publishServiceProvider.canRenamePublishedCollectionSet = true
+-- Renaming is enabled by default. The SDK field is the inverse
+-- (disableRenamePublishedCollection / ...Set); there is no canRename* field.
 
 -- Define what happens with collections
 function publishServiceProvider.getCollectionBehaviorInfo(publishSettings)
@@ -195,9 +215,37 @@ local function ensureAncestorAlbums(publishSettings, parents)
 
     -- parents is ordered outermost to innermost
     for _, parent in ipairs(parents) do
-        if parent.remoteCollectionId and parent.remoteCollectionId ~= '' then
+        local knownId = parent.remoteCollectionId
+        if not knownId or knownId == '' then
+            knownId = getSetAlbumId(parent.localCollectionId)
+        end
+
+        if knownId and knownId ~= '' then
             -- This ancestor already has a Lychee album ID
-            currentParentId = parent.remoteCollectionId
+            currentParentId = knownId
+            storeSetAlbumId(parent.localCollectionId, knownId)
+
+            -- Lightroom never tells us a collection set was renamed - there is no
+            -- renamePublishedCollectionSet callback - so detect it here by comparing
+            -- against the album's ACTUAL title on the server.
+            --
+            -- Comparing against a locally cached name does not work: the cache and the
+            -- server drift apart the moment a rename happens while the cache is being
+            -- populated, and then they agree with each other forever while the gallery
+            -- stays wrong. The server title is the only thing that cannot go stale.
+            local details = LycheeAPI.getAlbumDetails(publishSettings, currentParentId)
+            local remoteTitle = details and details.resource and details.resource.title
+            logger:info('Set name check: Lightroom="' .. tostring(parent.name) ..
+                '" Lychee="' .. tostring(remoteTitle) .. '"')
+            if parent.name and remoteTitle and remoteTitle ~= parent.name then
+                logger:info('Collection set renamed in Lightroom: "' .. remoteTitle ..
+                    '" -> "' .. parent.name .. '" - renaming Lychee album ' .. currentParentId)
+                local ok, renameErr = LycheeAPI.renameAlbum(publishSettings, currentParentId, parent.name)
+                if not ok then
+                    logger:warn('Could not rename set album: ' .. tostring(renameErr))
+                end
+            end
+
             logger:info('Ancestor "' .. (parent.name or '?') .. '" already has remote ID: ' .. currentParentId)
         else
             -- This ancestor needs an album created (or found)
@@ -205,6 +253,8 @@ local function ensureAncestorAlbums(publishSettings, parents)
             local album, err = LycheeAPI.findOrCreateAlbum(publishSettings, parent.name, currentParentId)
             if album and album.id then
                 currentParentId = album.id
+                -- Remember it so rename/delete of this set can find its album
+                storeSetAlbumId(parent.localCollectionId, album.id)
                 logger:info('Ancestor "' .. (parent.name or '?') .. '" resolved to album ID: ' .. currentParentId)
             else
                 logger:warn('Failed to ensure ancestor "' .. (parent.name or '?') .. '": ' .. (err or 'unknown'))
@@ -816,89 +866,8 @@ function publishServiceProvider.renamePublishedCollection(publishSettings, info)
     end
 end
 
--- Called after a new Published Collection Set is created
-function publishServiceProvider.didCreateNewPublishedCollectionSet(publishSettings, info)
-    if not validateSettings(publishSettings) then
-        return
-    end
 
-    -- Ensure all ancestor albums exist and get the parent album ID
-    local parentAlbumId = ensureAncestorAlbums(publishSettings, info.parents)
 
-    -- Create the album for this collection set
-    local albumId, err = LycheeAPI.createAlbum(publishSettings, info.name, parentAlbumId)
-    if not albumId then
-        LrDialogs.message('Album Creation Failed',
-            'Could not create album for collection set "' .. info.name .. '": ' .. (err or 'Unknown error'),
-            'warning')
-        return
-    end
-
-    logger:info('Created album for collection set "' .. info.name .. '": ' .. albumId)
-
-    -- Store the album ID on the collection set
-    storeRemoteAlbum(info.publishedCollectionSet, albumId, publishSettings,
-        'collection set "' .. info.name .. '"')
-
-    -- Apply pending settings if the user configured them during creation
-    local pendingSet = getPendingSettings(info.name)
-    if pendingSet then
-        logger:info('Applying pending collection settings for set "' .. info.name .. '"')
-        saveAlbumSettingsToLychee(publishSettings, albumId, info.name, pendingSet)
-        clearPendingSettings(info.name)
-    end
-end
-
--- Called when a Published Collection Set is being deleted
-function publishServiceProvider.deletePublishedCollectionSet(publishSettings, info)
-    if not validateSettings(publishSettings) then
-        return
-    end
-
-    local albumId = info.remoteId
-
-    if albumId and albumId ~= '' then
-        -- Warn the user about cascading delete
-        local result = LrDialogs.confirm(
-            'Delete Album from Lychee?',
-            'Deleting this collection set will also delete the album "' .. (info.name or '') ..
-            '" and ALL its sub-albums and photos from your Lychee gallery. This cannot be undone.',
-            'Delete',
-            'Cancel'
-        )
-
-        if result == 'cancel' then
-            LrErrors.throwCanceled()
-        end
-
-        local success, err = LycheeAPI.deleteAlbum(publishSettings, albumId)
-        if not success then
-            LrDialogs.message('Delete Failed',
-                err or 'Could not delete album from Lychee gallery.',
-                'critical')
-        else
-            logger:info('Deleted album for collection set "' .. (info.name or '') .. '": ' .. albumId)
-        end
-    end
-end
-
--- Called when a Published Collection Set is being renamed
-function publishServiceProvider.renamePublishedCollectionSet(publishSettings, info)
-    local newName = info.name
-
-    if not validateSettings(publishSettings) then
-        return
-    end
-
-    local albumId = info.remoteId
-
-    if albumId then
-        local success, err = LycheeAPI.renameAlbum(publishSettings, albumId, newName)
-        if not success then
-            LrDialogs.message('Rename Failed', err or 'Could not rename album in Lychee gallery.', 'warning')
-        end
-    end
-end
 
 -- Called when user tries to edit a published photo
 function publishServiceProvider.shouldReverseSequenceForPublishedCollection(publishSettings, collectionInfo)
