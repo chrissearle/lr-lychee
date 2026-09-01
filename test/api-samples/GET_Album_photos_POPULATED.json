@@ -1,0 +1,108 @@
+{
+    "photos": [
+        {
+            "id": "XjBKS2D2GbxzyvReRiAbYLDq",
+            "album_id": "lDllj0FQUl2OrXDCOvFspiSC",
+            "checksum": "1a4ae1b2d3549640bb56ee4a3cca672becc05e4a",
+            "created_at": "2026-08-27T08:07:09+00:00",
+            "description": "",
+            "is_highlighted": false,
+            "license": "none",
+            "live_photo_checksum": null,
+            "live_photo_content_id": null,
+            "live_photo_url": null,
+            "original_checksum": "1a4ae1b2d3549640bb56ee4a3cca672becc05e4a",
+            "size_variants": {
+                "raw": null,
+                "original": {
+                    "type": 1,
+                    "locale": "Original",
+                    "filesize": "825.00 B",
+                    "height": 16,
+                    "width": 16,
+                    "url": "http://localhost:8000/uploads/original/5d/51/20f05025086ab7278013d135e1e3.jpg",
+                    "is_watermarked": false
+                },
+                "medium2x": null,
+                "medium": null,
+                "small2x": null,
+                "small": null,
+                "thumb2x": null,
+                "thumb": {
+                    "type": 7,
+                    "locale": "Square thumb",
+                    "filesize": "2.55 KB",
+                    "height": 200,
+                    "width": 200,
+                    "url": "http://localhost:8000/uploads/thumb/5d/51/20f05025086ab7278013d135e1e3.jpeg",
+                    "is_watermarked": false
+                },
+                "placeholder": {
+                    "type": 8,
+                    "locale": "Low Quality Image Placeholder",
+                    "filesize": "96.00 B",
+                    "height": 16,
+                    "width": 16,
+                    "url": "data:image/webp;base64,UklGRkIAAABXRUJQVlA4IDYAAACwAQCdASoQABAABABoJbACdAENUWjAAP7xEUTwMSO2s5mzojf5ggYU+Eupb0h9L4j2aoHW",
+                    "is_watermarked": false
+                }
+            },
+            "tags": [],
+            "taken_at": null,
+            "taken_at_orig_tz": null,
+            "title": "Test Photo (1).jpg",
+            "type": "image/jpeg",
+            "updated_at": "2026-08-27T08:07:09+00:00",
+            "next_photo_id": null,
+            "previous_photo_id": null,
+            "preformatted": {
+                "created_at": "Aug 27, 2026, 8:07:09 AM UTC",
+                "taken_at": null,
+                "date_overlay": "Aug 27, 2026, 8:07:09 AM UTC",
+                "make": null,
+                "model": null,
+                "shutter": "",
+                "aperture": "",
+                "iso": "ISO ",
+                "lens": "",
+                "focal": null,
+                "duration": "0s",
+                "fps": "",
+                "filesize": "825.00 B",
+                "resolution": "16 x 16",
+                "latitude": null,
+                "longitude": null,
+                "altitude": null,
+                "location": null,
+                "license": "",
+                "description": ""
+            },
+            "precomputed": {
+                "is_video": false,
+                "is_raw": false,
+                "is_livephoto": false,
+                "is_camera_date": false,
+                "has_exif": false,
+                "has_location": false,
+                "is_taken_at_modified": false,
+                "latitude": null,
+                "longitude": null,
+                "altitude": null
+            },
+            "timeline": null,
+            "palette": null,
+            "statistics": null,
+            "rating": {
+                "rating_user": 0,
+                "rating_count": 0,
+                "rating_avg": 0
+            },
+            "face_count": 0,
+            "is_validated": true
+        }
+    ],
+    "current_page": 1,
+    "last_page": 1,
+    "per_page": 100,
+    "total": 1
+}

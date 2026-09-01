@@ -1,0 +1,90 @@
+# Local Lychee test rig for the LrLychee Lightroom plugin.
+#
+# Image is deliberately PINNED, not :latest — the plugin talks to a versioned
+# REST API and 7.5 removed GET /Album (split into Album::head / Album::photos /
+# Album::albums). Running :latest hid a 9-month version drift. When bumping,
+# bump this comment too: last verified against Lychee v7.7.5.
+#
+#   docker compose -f test/docker-compose.yml up -d
+#   open http://localhost:8000
+
+x-lychee-common: &lychee-common
+  image: ghcr.io/lycheeorg/lychee:v7.7.5
+  restart: unless-stopped
+  depends_on:
+    lychee_db:
+      condition: service_healthy
+  volumes:
+    - ./lychee/uploads:/app/public/uploads
+    - ./lychee/logs:/app/storage/logs
+    - ./lychee/tmp:/app/storage/tmp
+
+x-lychee-env: &lychee-env
+  APP_NAME: Lychee
+  # Lychee 7.7+ refuses to start without this. Kept out of the repo:
+  # copy test/.env.example to test/.env and generate one. See TESTING.md.
+  APP_KEY: ${APP_KEY:?set APP_KEY in test/.env - copy from test/.env.example}
+  APP_ENV: production
+  APP_URL: http://localhost:8000
+  APP_FORCE_HTTPS: "false"
+  APP_TIMEZONE: UTC
+  DB_CONNECTION: mysql
+  DB_HOST: lychee_db
+  DB_PORT: "3306"
+  DB_DATABASE: lychee
+  DB_USERNAME: lychee
+  DB_PASSWORD: lychee
+  QUEUE_CONNECTION: database
+  SESSION_DRIVER: file
+  SESSION_LIFETIME: "120"
+  PUID: "1000"
+  PGID: "1000"
+
+services:
+  lychee_db:
+    image: mariadb:10
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: lychee
+      MYSQL_USER: lychee
+      MYSQL_PASSWORD: lychee
+      MYSQL_ROOT_PASSWORD: lychee_root
+    volumes:
+      - mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 10
+
+  lychee_api:
+    <<: *lychee-common
+    container_name: lychee-api
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *lychee-env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/up"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  lychee_worker:
+    <<: *lychee-common
+    container_name: lychee-worker
+    environment:
+      <<: *lychee-env
+      LYCHEE_MODE: worker
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'queue:work' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  mysql:
+    name: lychee_prod_mysql
